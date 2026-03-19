@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# mypy / ruff cache
+.mypy_cache/
+.ruff_cache/
+
+# pytest
+.pytest_cache/
+
+# Uploads (runtime data)
+static/uploads/*
+!static/uploads/.gitkeep
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Claude Code
+.claude/

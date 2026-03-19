@@ -1,0 +1,36 @@
+name: toctoc
+type: saas
+domain: 식비 영수증 AI OCR 자동 정리 서비스
+scale: solo
+stack_override: []
+priority_agents: [A0, A3, A4, QA]
+features:
+  document_output: false
+  vector_search: false
+  external_api: false
+  auth: false
+  file_upload: true
+  notification: false
+  has_figma: false
+  needs_deploy_auto: false
+
+ui:
+  target_users: 개인/소규모 사업자 (식비 정리 담당)
+  platform: desktop_first
+
+mcp:
+  - Context7
+  - Sequential Thinking
+  - Serena
+  - Playwright
+
+agents:
+  A0: { role: 인프라, model: opus, status: 출격 }
+  A1: { role: 데이터, model: sonnet, status: 미출격 }
+  A2: { role: CRM, model: sonnet, status: 미출격 }
+  A3: { role: AI/OCR, model: opus, status: 출격 }
+  A4: { role: 비즈니스, model: sonnet, status: 출격 }
+  QA: { role: 검증, model: opus, status: 출격 }
+
+skills:
+  - upload_skill.py
