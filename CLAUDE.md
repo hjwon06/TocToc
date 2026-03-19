@@ -14,8 +14,8 @@
 ## 에이전트 배치
 ```
 A0 인프라   ✅ 완료 — models, config, database, alembic, skills, docker
-A3 AI/OCR  ⬜ 다음 — services/ocr.py (Claude Vision)
-A4 비즈니스 ⬜ 대기 — routers, templates, services
+A3 AI/OCR  ✅ 완료 — services/ocr.py (Claude Vision), tests/test_ocr.py (54 tests)
+A4 비즈니스 ⬜ 다음 — routers, templates, services
 QA 검증    ⬜ 대기 — 통합 테스트, E2E
 ```
 

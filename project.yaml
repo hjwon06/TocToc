@@ -26,10 +26,9 @@ mcp:
 
 agents:
   A0: { role: 인프라, model: opus, status: 출격 }
-  A1: { role: 데이터, model: sonnet, status: 미출격 }
-  A2: { role: CRM, model: sonnet, status: 미출격 }
+  A1: { role: 데이터, model: opus, status: 미출격 }
   A3: { role: AI/OCR, model: opus, status: 출격 }
-  A4: { role: 비즈니스, model: sonnet, status: 출격 }
+  A4: { role: 비즈니스, model: opus, status: 출격 }
   QA: { role: 검증, model: opus, status: 출격 }
 
 skills:
