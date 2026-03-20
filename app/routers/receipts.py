@@ -11,7 +11,7 @@ from datetime import date
 from math import ceil
 
 from fastapi import APIRouter, Depends, Form, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from app.services.image import (
     get_image_url,
     get_thumbnail_url,
 )
+from app.services.invoice import generate_invoice
 from app.services.ocr import OcrResult, extract_receipt_data
 from skills.upload_skill import save_upload, validate_file_size
 
@@ -245,6 +246,49 @@ async def list_receipts(
             "total": total,
             "total_pages": total_pages,
         }
+    )
+
+
+@router.get("/export", response_model=None)
+async def export_invoice(
+    month: str = Query(description="월 (YYYY-MM)"),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse | JSONResponse:
+    """월별 식비 인보이스 DOCX 다운로드."""
+    try:
+        year_str, mon_str = month.split("-")
+        year, mon = int(year_str), int(mon_str)
+        start_date = date(year, mon, 1)
+        if mon == 12:
+            end_date = date(year + 1, 1, 1)
+        else:
+            end_date = date(year, mon + 1, 1)
+    except (ValueError, IndexError):
+        return JSONResponse(
+            content={"error": "잘못된 월 형식입니다. (YYYY-MM)"},
+            status_code=400,
+        )
+
+    # 해당 월 영수증 조회
+    query = (
+        select(Receipt)
+        .where(
+            (Receipt.receipt_date >= start_date) & (Receipt.receipt_date < end_date)
+            | Receipt.receipt_date.is_(None)
+        )
+        .order_by(Receipt.receipt_date.asc().nullslast())
+    )
+    result = await db.execute(query)
+    receipts = result.scalars().all()
+    receipt_dicts = [_receipt_to_dict(r) for r in receipts]
+
+    docx_stream = generate_invoice(receipt_dicts, year, mon)
+    filename = f"invoice_{year}_{mon:02d}.docx"
+
+    return StreamingResponse(
+        docx_stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
