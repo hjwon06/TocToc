@@ -49,7 +49,7 @@ OCR_USER_PROMPT = """이 영수증 이미지에서 정보를 추출해 아래 JS
 
 규칙:
 - amount는 총 결제금액(합계)을 원 단위 정수로 입력 (콤마, "원" 제거)
-- date는 반드시 YYYY-MM-DD 형식
+- date는 반드시 YYYY-MM-DD 형식. 현재 연도는 __CURRENT_YEAR__년입니다. 연도가 불확실하면 __CURRENT_YEAR__으로 입력하세요.
 - 영수증이 아닌 이미지라면 {"error": "영수증이 아닙니다"} 로만 응답
 - JSON 외 다른 텍스트를 포함하지 마세요"""
 
@@ -365,7 +365,7 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
                         },
                         {
                             "type": "text",
-                            "text": OCR_USER_PROMPT,
+                            "text": OCR_USER_PROMPT.replace("__CURRENT_YEAR__", str(date.today().year)),
                         },
                     ],
                 },

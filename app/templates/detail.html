@@ -84,9 +84,8 @@
         <!-- 수정 모드 -->
         <template x-if="editing">
             <form hx-put="/api/receipts/{{ receipt.id }}"
-                  hx-target="#receipt-detail"
-                  hx-swap="outerHTML"
-                  @htmx:after-request="editing = false; $dispatch('show-toast', {message: '수정 완료', type: 'success'})">
+                  hx-swap="none"
+                  @htmx:after-request="if(event.detail.successful) { window.location.reload(); }">
                 <div class="space-y-4">
                     <div>
                         <label class="block text-base text-gray-700 font-medium mb-1">날짜</label>
