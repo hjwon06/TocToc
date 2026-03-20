@@ -5,6 +5,7 @@ A4 비즈니스 에이전트 소유 파일.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 from math import ceil
@@ -24,10 +25,13 @@ from app.services.image import (
     get_image_url,
     get_thumbnail_url,
 )
-from app.services.ocr import extract_receipt_data
+from app.services.ocr import OcrResult, extract_receipt_data
 from skills.upload_skill import save_upload, validate_file_size
 
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_FILES = 20
+OCR_CONCURRENCY = 5
 
 templates = Jinja2Templates(directory="app/templates")
 
@@ -67,19 +71,28 @@ async def upload_receipts(
     4. OCR 추출
     5. DB 저장
     """
+    if len(files) > MAX_UPLOAD_FILES:
+        msg = f"한 번에 최대 {MAX_UPLOAD_FILES}장까지 업로드할 수 있습니다."
+        is_htmx = request.headers.get("HX-Request") == "true"
+        if is_htmx:
+            return templates.TemplateResponse(
+                "partials/receipt_list.html",
+                {"request": request, "receipts": [], "errors": [msg], "is_upload_result": True},
+            )
+        return JSONResponse(content={"error": msg}, status_code=400)
+
     results: list[dict] = []
     errors: list[str] = []
 
+    # ── Phase 1: 파일 저장 + 썸네일 (순차, 빠름) ──
+    saved: list[tuple[str, str]] = []  # (filename, image_path)
     for file in files:
         try:
-            # 파일 크기 검증
             if not await validate_file_size(file, settings.MAX_FILE_SIZE_MB):
                 errors.append(
                     f"{file.filename}: 파일 크기 초과 ({settings.MAX_FILE_SIZE_MB}MB 제한)"
                 )
                 continue
-
-            # 파일 저장
             try:
                 image_path = await save_upload(file, settings.UPLOAD_DIR)
             except ValueError as e:
@@ -88,43 +101,46 @@ async def upload_receipts(
             except IOError as e:
                 errors.append(f"{file.filename}: {e}")
                 continue
-
-            # 썸네일 생성
             create_thumbnail(image_path)
-
-            # OCR 추출
-            try:
-                ocr_result = await extract_receipt_data(image_path)
-            except Exception as e:
-                logger.error("OCR 실패: %s — %s", file.filename, e)
-                ocr_result = None
-
-            # DB 저장
-            if ocr_result and ocr_result.success:
-                receipt = Receipt(
-                    image_path=image_path,
-                    receipt_date=ocr_result.receipt_date,
-                    amount=ocr_result.amount,
-                    is_manual=False,
-                    ocr_raw=ocr_result.raw_text,
-                )
-            else:
-                # OCR 실패 시
-                receipt = Receipt(
-                    image_path=image_path,
-                    receipt_date=None,
-                    amount=None,
-                    is_manual=True,
-                    ocr_raw=ocr_result.raw_text if ocr_result else "OCR 처리 실패",
-                )
-
-            db.add(receipt)
-            await db.flush()
-            results.append(_receipt_to_dict(receipt))
-
+            saved.append((file.filename or "unknown", image_path))
         except Exception as e:
-            logger.error("업로드 처리 실패: %s — %s", file.filename, e)
+            logger.error("파일 저장 실패: %s — %s", file.filename, e)
             errors.append(f"{file.filename}: 처리 중 오류 발생")
+
+    # ── Phase 2: 병렬 OCR (세마포어로 동시 5개 제한) ──
+    semaphore = asyncio.Semaphore(OCR_CONCURRENCY)
+
+    async def _ocr_task(image_path: str) -> OcrResult | None:
+        async with semaphore:
+            try:
+                return await extract_receipt_data(image_path)
+            except Exception as e:
+                logger.error("OCR 실패: %s — %s", image_path, e)
+                return None
+
+    ocr_results = await asyncio.gather(*[_ocr_task(path) for _, path in saved])
+
+    # ── Phase 3: DB 저장 ──
+    for (filename, image_path), ocr_result in zip(saved, ocr_results):
+        if ocr_result and ocr_result.success:
+            receipt = Receipt(
+                image_path=image_path,
+                receipt_date=ocr_result.receipt_date,
+                amount=ocr_result.amount,
+                is_manual=False,
+                ocr_raw=ocr_result.raw_text,
+            )
+        else:
+            receipt = Receipt(
+                image_path=image_path,
+                receipt_date=None,
+                amount=None,
+                is_manual=True,
+                ocr_raw=ocr_result.raw_text if ocr_result else "OCR 처리 실패",
+            )
+        db.add(receipt)
+        await db.flush()
+        results.append(_receipt_to_dict(receipt))
 
     # HX-Request이면 partial HTML 반환
     is_htmx = request.headers.get("HX-Request") == "true"

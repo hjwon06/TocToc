@@ -44,10 +44,14 @@ QA: tests/
 - GET /api/stats?month= — 월별 통계
 
 ## 검증된 패턴 (✅)
-(개발 중 발견할 때마다 추가)
+- 병렬 OCR: asyncio.gather + Semaphore(5) — 순차 대비 ~5배 빠름
+- Docker 컨테이너 간 통신: DATABASE_URL에 서비스명(`postgres`) 사용
+- pydantic-settings extra="ignore" — .env에 프로젝트 외 키 있어도 안전
 
 ## 실패 패턴 (❌)
-(개발 중 실패할 때마다 추가)
+- PG16 + asyncpg: 로컬→Docker 연결 시 `no encryption` 거부 → POSTGRES_HOST_AUTH_METHOD=trust 필요
+- pytest + shell pipe (`| head`): 프로세스 행 발생 → 파이프 없이 실행
+- 포트 8000: 다른 프로젝트와 충돌 → toctoc은 8002 사용
 
 ## 핸드오프 실제 기록
 (각 Phase 완료 시 기록)

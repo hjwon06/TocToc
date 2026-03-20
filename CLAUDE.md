@@ -15,8 +15,8 @@
 ```
 A0 인프라   ✅ 완료 — models, config, database, alembic, skills, docker
 A3 AI/OCR  ✅ 완료 — services/ocr.py (Claude Vision), tests/test_ocr.py (54 tests)
-A4 비즈니스 ⬜ 다음 — routers, templates, services
-QA 검증    ⬜ 대기 — 통합 테스트, E2E
+A4 비즈니스 ✅ 완료 — routers, templates, services, 병렬 OCR (90 tests)
+QA 검증    ✅ 완료 — integration 9 + e2e 6 = 15 tests (총 105)
 ```
 
 ## 파일 소유권
@@ -53,11 +53,14 @@ QA: tests/integration/, tests/e2e/
 
 ## 실행 명령어
 ```bash
+# 전체 실행 (Docker)
+docker compose up -d
+
 # DB만 실행
 docker compose up -d postgres
 
-# 로컬 개발
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 로컬 개발 (포트 8000 사용 중이면 8002)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 
 # 테스트
 pytest tests/ -v
