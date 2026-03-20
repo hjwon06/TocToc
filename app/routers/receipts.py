@@ -26,7 +26,7 @@ from app.services.image import (
     get_image_url,
     get_thumbnail_url,
 )
-from app.services.invoice import generate_invoice
+from app.services.invoice import AMOUNT_CAP, generate_invoice
 from app.services.ocr import OcrResult, extract_receipt_data
 from skills.upload_skill import save_upload, validate_file_size
 
@@ -44,13 +44,16 @@ router = APIRouter(prefix="/api/receipts", tags=["receipts"])
 
 def _receipt_to_dict(receipt: Receipt) -> dict:
     """Receipt 모델을 딕셔너리로 변환."""
+    raw_amount = receipt.amount
+    capped = min(raw_amount, AMOUNT_CAP) if raw_amount and raw_amount > 0 else raw_amount
     return {
         "id": receipt.id,
         "image_path": receipt.image_path,
         "image_url": get_image_url(receipt.image_path),
         "thumbnail_url": get_thumbnail_url(receipt.image_path),
         "receipt_date": receipt.receipt_date.isoformat() if receipt.receipt_date else None,
-        "amount": receipt.amount,
+        "amount": capped,
+        "amount_raw": raw_amount,
         "is_manual": receipt.is_manual,
         "ocr_raw": receipt.ocr_raw,
         "created_at": receipt.created_at.isoformat() if receipt.created_at else None,

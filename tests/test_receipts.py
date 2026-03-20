@@ -140,7 +140,7 @@ async def test_get_receipt(
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == receipt.id
-    assert data["amount"] == 15000
+    assert data["amount_raw"] == 15000
 
 
 async def test_get_receipt_not_found(client: AsyncClient) -> None:
@@ -168,7 +168,7 @@ async def test_update_receipt(
     assert resp.status_code == 200
     data = resp.json()
     assert data["receipt_date"] == "2026-03-15"
-    assert data["amount"] == 25000
+    assert data["amount_raw"] == 25000
     assert data["is_manual"] is True
 
 
@@ -264,7 +264,7 @@ async def test_upload_receipt_success(client: AsyncClient) -> None:
     assert resp.status_code == 201
     data = resp.json()
     assert data["total_uploaded"] == 1
-    assert data["uploaded"][0]["amount"] == 12500
+    assert data["uploaded"][0]["amount_raw"] == 12500
     assert data["uploaded"][0]["receipt_date"] == "2026-03-19"
 
 

@@ -28,12 +28,13 @@
             <p class="text-sm text-gray-500 mb-1">평균 지출</p>
             <p class="text-xl font-bold text-gray-900" x-text="formatAmount(stats.avg)">-</p>
         </div>
-        <div class="bg-white rounded-lg shadow-sm p-4">
+        <a href="/unclassified" class="bg-white rounded-lg shadow-sm p-4 no-underline block hover:bg-yellow-50 transition-colors">
             <p class="text-sm text-gray-500 mb-1">미분류</p>
             <p class="text-xl font-bold"
                :class="stats.unclassified > 0 ? 'text-yellow-600' : 'text-gray-900'"
                x-text="stats.unclassified + '건'">-</p>
-        </div>
+            <p class="text-xs text-gray-400 mt-1" x-show="stats.unclassified > 0">클릭하여 재OCR &rarr;</p>
+        </a>
     </div>
 
     <!-- 최소/최대 -->

@@ -37,7 +37,7 @@ async def test_update_persists(client: AsyncClient) -> None:
     assert resp.status_code == 200
     updated = resp.json()
     assert updated["receipt_date"] == "2026-01-01"
-    assert updated["amount"] == 99000
+    assert updated["amount_raw"] == 99000
     assert updated["is_manual"] is True
 
 

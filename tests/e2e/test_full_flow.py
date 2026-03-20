@@ -35,7 +35,7 @@ async def test_upload_list_detail_edit_delete(
     # 3. 상세 조회
     resp = await client.get(f"/api/receipts/{rid}")
     assert resp.status_code == 200
-    assert resp.json()["amount"] == 12000
+    assert resp.json()["amount_raw"] == 12000
 
     # 4. 수정
     resp = await client.put(
@@ -45,7 +45,7 @@ async def test_upload_list_detail_edit_delete(
     assert resp.status_code == 200
     updated = resp.json()
     assert updated["receipt_date"] == "2026-02-01"
-    assert updated["amount"] == 55000
+    assert updated["amount_raw"] == 55000
 
     # 5. 삭제
     resp = await client.delete(f"/api/receipts/{rid}")

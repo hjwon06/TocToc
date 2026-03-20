@@ -25,7 +25,7 @@ async def test_upload_saves_to_db(client: AsyncClient) -> None:
 
     receipt = data["uploaded"][0]
     assert receipt["receipt_date"] == "2026-03-15"
-    assert receipt["amount"] == 12000
+    assert receipt["amount_raw"] == 12000
     assert receipt["is_manual"] is False
 
 
