@@ -80,9 +80,18 @@ async def retry_ocr(
         ocr_result = None
 
     if ocr_result and ocr_result.success:
-        receipt.receipt_date = ocr_result.receipt_date
+        from dateutil.relativedelta import relativedelta
+
+        ocr_date = ocr_result.receipt_date
+        today = date.today()
+        date_min = date(today.year, today.month, 1) - relativedelta(months=1)
+        if ocr_date and ocr_date < date_min:
+            logger.warning("재OCR 날짜 비정상: %s (%s) → 미분류", receipt_id, ocr_date)
+            ocr_date = None
+
+        receipt.receipt_date = ocr_date
         receipt.amount = ocr_result.amount
-        receipt.is_manual = False
+        receipt.is_manual = ocr_date is None
         receipt.ocr_raw = ocr_result.raw_text
     else:
         receipt.ocr_raw = ocr_result.raw_text if ocr_result else "OCR 재시도 실패"
@@ -92,20 +101,22 @@ async def retry_ocr(
 
     is_htmx = request.headers.get("HX-Request") == "true"
     if is_htmx:
-        if ocr_result and ocr_result.success:
-            # 성공 → 카드 제거 (미분류 목록에서 사라짐)
+        if not receipt.is_manual and receipt.receipt_date:
+            # 완전 성공 → 카드 제거
+            amt_text = f"₩{receipt.amount:,}" if receipt.amount else ""
             return HTMLResponse(
                 '<div class="bg-green-50 text-green-700 rounded-lg p-3 text-sm">'
-                f'✓ OCR 성공 — {receipt.receipt_date}, '
-                f'₩{receipt.amount:,}' if receipt.amount else ''
+                f'✓ OCR 성공 — {receipt.receipt_date}, {amt_text}'
                 '</div>'
             )
-        # 실패 → 카드 유지
-        response = templates.TemplateResponse(
-            "partials/receipt_card.html",
-            {"request": request, "receipt": _receipt_to_dict(receipt)},
+        # 실패 또는 날짜 비정상 → 카드 유지 + 안내
+        msg = "날짜를 인식하지 못했습니다. 수동으로 입력해주세요." if ocr_result and ocr_result.success else "OCR 실패"
+        return HTMLResponse(
+            f'<div id="unclassified-{receipt.id}" class="bg-white rounded-lg shadow-sm p-4">'
+            f'<div class="bg-yellow-50 text-yellow-700 rounded-lg p-3 text-sm mb-2">{msg}</div>'
+            f'<a href="/receipts/{receipt.id}" class="text-blue-600 text-sm">수동 입력하기 →</a>'
+            '</div>'
         )
-        return response
 
     return JSONResponse(content=_receipt_to_dict(receipt))
 
@@ -176,13 +187,24 @@ async def upload_receipts(
     ocr_results = await asyncio.gather(*[_ocr_task(path) for _, path in saved])
 
     # ── Phase 3: DB 저장 ──
+    from dateutil.relativedelta import relativedelta
+
+    today = date.today()
+    date_min = date(today.year, today.month, 1) - relativedelta(months=1)
+
     for (filename, image_path), ocr_result in zip(saved, ocr_results):
         if ocr_result and ocr_result.success:
+            ocr_date = ocr_result.receipt_date
+            # 날짜가 6개월 이상 과거면 OCR 오류로 판단 → 미분류
+            if ocr_date and ocr_date < date_min:
+                logger.warning("OCR 날짜 비정상: %s (%s) → 미분류", filename, ocr_date)
+                ocr_date = None
+
             receipt = Receipt(
                 image_path=image_path,
-                receipt_date=ocr_result.receipt_date,
+                receipt_date=ocr_date,
                 amount=ocr_result.amount,
-                is_manual=False,
+                is_manual=ocr_date is None,
                 ocr_raw=ocr_result.raw_text,
             )
         else:
@@ -224,7 +246,7 @@ async def upload_receipts(
 async def list_receipts(
     request: Request,
     month: str | None = Query(default=None, description="월 필터 (YYYY-MM)"),
-    sort: str = Query(default="date_desc", description="정렬"),
+    sort: str = Query(default="date_asc", description="정렬"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
