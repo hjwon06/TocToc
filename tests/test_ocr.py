@@ -6,9 +6,9 @@ import base64
 import json
 from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import anthropic
+import httpx
 import pytest
 
 from app.services.ocr import (
@@ -344,14 +344,17 @@ class TestLoadAndEncodeImage:
 # ── extract_receipt_data 통합 테스트 ──────────────────
 
 
-def _make_mock_response(text: str) -> MagicMock:
-    """Claude API 응답 mock 생성."""
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
-    response = MagicMock()
-    response.content = [block]
-    return response
+def _make_httpx_response(
+    text: str, status_code: int = 200
+) -> httpx.Response:
+    """OpenAI API httpx 응답 mock 생성."""
+    if status_code == 200:
+        body = json.dumps({
+            "choices": [{"message": {"content": text}}]
+        }).encode()
+    else:
+        body = text.encode()
+    return httpx.Response(status_code=status_code, content=body)
 
 
 class TestExtractReceiptData:
@@ -370,12 +373,14 @@ class TestExtractReceiptData:
             "store_name": "맛있는 식당",
             "raw_text": "맛있는 식당 김치찌개 8,000 합계 12,500",
         })
-        mock_response = _make_mock_response(api_response_text)
+        mock_resp = _make_httpx_response(api_response_text)
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_response)
-            mock_client_fn.return_value = mock_client
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -386,20 +391,18 @@ class TestExtractReceiptData:
 
     @pytest.mark.asyncio
     async def test_api_error(self, tmp_path: Path) -> None:
-        """Claude API 에러 발생 시."""
+        """API 500 에러 발생 시."""
         img_file = tmp_path / "receipt.jpg"
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                side_effect=anthropic.APIError(
-                    message="Internal Server Error",
-                    request=MagicMock(),
-                    body=None,
-                )
-            )
-            mock_client_fn.return_value = mock_client
+        mock_resp = _make_httpx_response("Internal Server Error", 500)
+
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -412,19 +415,14 @@ class TestExtractReceiptData:
         img_file = tmp_path / "receipt.jpg"
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_response = MagicMock()
-            mock_response.status_code = 429
-            mock_response.headers = {}
-            mock_client.messages.create = AsyncMock(
-                side_effect=anthropic.RateLimitError(
-                    message="Rate limit exceeded",
-                    response=mock_response,
-                    body=None,
-                )
-            )
-            mock_client_fn.return_value = mock_client
+        mock_resp = _make_httpx_response("Rate limit exceeded", 429)
+
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -437,19 +435,14 @@ class TestExtractReceiptData:
         img_file = tmp_path / "receipt.jpg"
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_response = MagicMock()
-            mock_response.status_code = 401
-            mock_response.headers = {}
-            mock_client.messages.create = AsyncMock(
-                side_effect=anthropic.AuthenticationError(
-                    message="Invalid API key",
-                    response=mock_response,
-                    body=None,
-                )
-            )
-            mock_client_fn.return_value = mock_client
+        mock_resp = _make_httpx_response("Invalid API key", 401)
+
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -462,14 +455,12 @@ class TestExtractReceiptData:
         img_file = tmp_path / "receipt.jpg"
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(
-                side_effect=anthropic.APIConnectionError(
-                    request=MagicMock(),
-                )
-            )
-            mock_client_fn.return_value = mock_client
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -486,16 +477,18 @@ class TestExtractReceiptData:
 
     @pytest.mark.asyncio
     async def test_empty_response(self, tmp_path: Path) -> None:
-        """Claude가 빈 응답을 반환할 때."""
+        """GPT-4o가 빈 응답을 반환할 때."""
         img_file = tmp_path / "receipt.jpg"
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
-        mock_response = _make_mock_response("")
+        mock_resp = _make_httpx_response("")
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_response)
-            mock_client_fn.return_value = mock_client
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -509,12 +502,14 @@ class TestExtractReceiptData:
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
         api_response_text = json.dumps({"error": "영수증이 아닙니다"})
-        mock_response = _make_mock_response(api_response_text)
+        mock_resp = _make_httpx_response(api_response_text)
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_response)
-            mock_client_fn.return_value = mock_client
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
@@ -525,22 +520,22 @@ class TestExtractReceiptData:
     async def test_malformed_json_with_regex_fallback(
         self, tmp_path: Path
     ) -> None:
-        """Claude가 잘못된 JSON을 반환 → 정규식 fallback."""
+        """GPT-4o가 잘못된 JSON을 반환 → 정규식 fallback."""
         img_file = tmp_path / "receipt.png"
         img_file.write_bytes(b"\x89PNGfake-png")
 
-        # JSON이 아닌 일반 텍스트 응답
         raw = "맛있는 식당\n날짜: 2025.03.15\n김치찌개 8000\n합계 12,500원"
-        mock_response = _make_mock_response(raw)
+        mock_resp = _make_httpx_response(raw)
 
-        with patch("app.services.ocr._get_client") as mock_client_fn:
-            mock_client = AsyncMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_response)
-            mock_client_fn.return_value = mock_client
+        with patch("app.services.ocr.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post = AsyncMock(return_value=mock_resp)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
 
             result = await extract_receipt_data(str(img_file))
 
-        # 정규식으로 날짜/금액 추출됨
         assert result.receipt_date == date(2025, 3, 15)
         assert result.amount == 12500
         assert result.success is True
@@ -552,9 +547,9 @@ class TestExtractReceiptData:
         img_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
 
         with patch("app.services.ocr.settings") as mock_settings:
-            mock_settings.ANTHROPIC_API_KEY = ""
+            mock_settings.ORBIT_OPENAI_API_KEY = ""
 
             result = await extract_receipt_data(str(img_file))
 
         assert result.success is False
-        assert "ANTHROPIC_API_KEY" in result.raw_text or "OCR 처리 실패" in result.raw_text
+        assert "ORBIT_OPENAI_API_KEY" in result.raw_text or "OCR 처리 실패" in result.raw_text

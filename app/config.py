@@ -18,8 +18,8 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:password@localhost:5432/toctoc"
     )
 
-    # Claude API (Vision OCR)
-    ANTHROPIC_API_KEY: str = ""
+    # AI/OCR (OpenAI GPT-4o Vision)
+    ORBIT_OPENAI_API_KEY: str = ""
 
     # File Upload
     UPLOAD_DIR: str = "static/uploads"

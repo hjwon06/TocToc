@@ -89,12 +89,19 @@ async def retry_ocr(
 
     is_htmx = request.headers.get("HX-Request") == "true"
     if is_htmx:
+        if ocr_result and ocr_result.success:
+            # 성공 → 카드 제거 (미분류 목록에서 사라짐)
+            return HTMLResponse(
+                '<div class="bg-green-50 text-green-700 rounded-lg p-3 text-sm">'
+                f'✓ OCR 성공 — {receipt.receipt_date}, '
+                f'₩{receipt.amount:,}' if receipt.amount else ''
+                '</div>'
+            )
+        # 실패 → 카드 유지
         response = templates.TemplateResponse(
             "partials/receipt_card.html",
             {"request": request, "receipt": _receipt_to_dict(receipt)},
         )
-        if ocr_result and ocr_result.success:
-            response.headers["HX-Trigger"] = "show-toast"
         return response
 
     return JSONResponse(content=_receipt_to_dict(receipt))
@@ -486,6 +493,89 @@ page_router = APIRouter(tags=["pages"])
 async def index_page(request: Request) -> HTMLResponse:
     """메인 목록 페이지."""
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@page_router.get("/unclassified", response_class=HTMLResponse)
+async def unclassified_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """미분류 영수증 목록 페이지."""
+    query = (
+        select(Receipt)
+        .where(Receipt.is_manual.is_(True))
+        .order_by(Receipt.created_at.desc())
+    )
+    result = await db.execute(query)
+    receipts = result.scalars().all()
+    receipt_dicts = [_receipt_to_dict(r) for r in receipts]
+
+    return templates.TemplateResponse(
+        "unclassified.html",
+        {"request": request, "receipts": receipt_dicts, "total": len(receipt_dicts)},
+    )
+
+
+@router.post("/retry-all-ocr")
+async def retry_all_ocr(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """미분류 영수증 전체 재OCR."""
+    query = (
+        select(Receipt)
+        .where(Receipt.is_manual.is_(True))
+        .order_by(Receipt.created_at.desc())
+    )
+    result = await db.execute(query)
+    receipts = list(result.scalars().all())
+
+    if not receipts:
+        return HTMLResponse(
+            '<div class="text-center py-16 text-gray-400">'
+            '<p class="text-base">미분류 영수증이 없습니다</p></div>'
+        )
+
+    # 병렬 OCR
+    semaphore = asyncio.Semaphore(OCR_CONCURRENCY)
+
+    async def _ocr_one(receipt: Receipt) -> None:
+        async with semaphore:
+            try:
+                ocr_result = await extract_receipt_data(receipt.image_path)
+            except Exception as e:
+                logger.error("재OCR 실패: %s — %s", receipt.id, e)
+                return
+            if ocr_result and ocr_result.success:
+                receipt.receipt_date = ocr_result.receipt_date
+                receipt.amount = ocr_result.amount
+                receipt.is_manual = False
+                receipt.ocr_raw = ocr_result.raw_text
+            else:
+                receipt.ocr_raw = ocr_result.raw_text if ocr_result else "OCR 재시도 실패"
+
+    await asyncio.gather(*[_ocr_one(r) for r in receipts])
+    await db.flush()
+
+    # 남은 미분류 조회
+    result2 = await db.execute(
+        select(Receipt)
+        .where(Receipt.is_manual.is_(True))
+        .order_by(Receipt.created_at.desc())
+    )
+    remaining = result2.scalars().all()
+    remaining_dicts = [_receipt_to_dict(r) for r in remaining]
+    success_count = len(receipts) - len(remaining_dicts)
+
+    return templates.TemplateResponse(
+        "unclassified.html",
+        {
+            "request": request,
+            "receipts": remaining_dicts,
+            "total": len(remaining_dicts),
+            "success_count": success_count,
+        },
+    )
 
 
 @page_router.get("/upload", response_class=HTMLResponse)

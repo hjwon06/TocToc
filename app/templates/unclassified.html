@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}toctoc — 미분류 영수증{% endblock %}
+
+{% block content %}
+<div x-data="{ retrying: false }">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">미분류 영수증 ({{ total }}건)</h1>
+        {% if total > 0 %}
+        <button hx-post="/api/receipts/retry-all-ocr"
+                hx-target="#unclassified-list"
+                hx-swap="innerHTML"
+                hx-confirm="전체 {{ total }}건 재OCR을 실행하시겠습니까?"
+                @htmx:before-request="retrying = true"
+                @htmx:after-request="retrying = false"
+                :disabled="retrying"
+                :class="retrying ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'"
+                class="min-h-[48px] px-4 text-base font-medium text-white rounded-lg transition-colors flex items-center gap-2">
+            <template x-if="retrying">
+                <div class="flex items-center gap-2">
+                    <span class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    OCR 처리 중...
+                </div>
+            </template>
+            <template x-if="!retrying">
+                <span>전체 재OCR</span>
+            </template>
+        </button>
+        {% endif %}
+    </div>
+
+    <div id="unclassified-list">
+        {% if receipts %}
+        <div class="space-y-3">
+            {% for receipt in receipts %}
+            <div id="unclassified-{{ receipt.id }}" class="bg-white rounded-lg shadow-sm p-4">
+                <div class="flex items-start gap-4">
+                    <!-- 썸네일 -->
+                    <a href="/receipts/{{ receipt.id }}" class="flex-shrink-0">
+                        <img src="{{ receipt.thumbnail_url }}"
+                             alt="영수증"
+                             class="w-16 h-16 object-cover rounded-lg">
+                    </a>
+                    <!-- 정보 -->
+                    <div class="flex-1 min-w-0">
+                        <p class="text-base text-gray-400">
+                            {{ receipt.receipt_date or '날짜 미확인' }}
+                        </p>
+                        <p class="text-base text-gray-400 mt-1">
+                            {% if receipt.amount is not none %}
+                                {{ "{:,}".format(receipt.amount) }}원
+                            {% else %}
+                                금액 미입력
+                            {% endif %}
+                        </p>
+                        <p class="text-xs text-gray-300 mt-1 truncate">
+                            {{ receipt.created_at[:10] if receipt.created_at else '' }}
+                        </p>
+                    </div>
+                    <!-- 재OCR 버튼 -->
+                    <button hx-post="/api/receipts/{{ receipt.id }}/retry-ocr"
+                            hx-target="#unclassified-{{ receipt.id }}"
+                            hx-swap="outerHTML"
+                            class="min-h-[48px] px-4 text-sm font-medium text-green-600 bg-green-50 hover:bg-green-100 rounded-lg transition-colors flex-shrink-0">
+                        재OCR
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-16">
+            <div class="text-gray-400 mb-4">
+                <svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+            </div>
+            <p class="text-base text-gray-500">미분류 영수증이 없습니다</p>
+            <a href="/" class="text-base text-blue-600 hover:text-blue-700 font-medium mt-2 inline-block">
+                목록으로 &rarr;
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

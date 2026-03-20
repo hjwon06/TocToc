@@ -1,4 +1,4 @@
-"""Claude Vision OCR 서비스 — 영수증 이미지에서 날짜·금액·품목 추출.
+"""GPT-4o Vision OCR 서비스 — 영수증 이미지에서 날짜·금액·품목 추출.
 
 A3 AI/OCR 에이전트 소유 파일.
 """
@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-import anthropic
-from anthropic.types import ImageBlockParam, TextBlockParam
+import httpx
 
 from app.config import settings
 
@@ -54,9 +53,9 @@ OCR_USER_PROMPT = """이 영수증 이미지에서 정보를 추출해 아래 JS
 - 영수증이 아닌 이미지라면 {"error": "영수증이 아닙니다"} 로만 응답
 - JSON 외 다른 텍스트를 포함하지 마세요"""
 
-# Claude Vision 모델
-VISION_MODEL = "claude-sonnet-4-20250514"
-# TODO(A0): VISION_MODEL을 config.py로 이동 검토
+# OpenAI GPT-4o Vision 모델
+VISION_MODEL = "gpt-4o"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 MAX_TOKENS = 2048
 
 
@@ -78,12 +77,12 @@ class OcrResult:
 # ── 내부 함수 ─────────────────────────────────────────
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
-    """AsyncAnthropic 클라이언트를 생성한다."""
-    api_key = settings.ANTHROPIC_API_KEY
+def _get_api_key() -> str:
+    """OpenAI API 키를 반환한다."""
+    api_key = settings.ORBIT_OPENAI_API_KEY
     if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
-    return anthropic.AsyncAnthropic(api_key=api_key)
+        raise ValueError("ORBIT_OPENAI_API_KEY가 설정되지 않았습니다.")
+    return api_key
 
 
 def _load_and_encode_image(image_path: str) -> tuple[str, str]:
@@ -125,7 +124,6 @@ def _load_and_encode_image(image_path: str) -> tuple[str, str]:
                 "pillow-heif 미설치 — HEIC 변환 불가. "
                 "원본 파일을 JPEG로 가정하여 전송합니다."
             )
-            # pillow-heif 없으면 원본 바이너리를 그대로 전송 시도
             raw_bytes = path.read_bytes()
             b64 = base64.standard_b64encode(raw_bytes).decode("utf-8")
             return b64, "image/jpeg"
@@ -216,7 +214,7 @@ def _normalize_date(raw: object) -> date | None:
 
 
 def _parse_ocr_response(response_text: str) -> OcrResult:
-    """Claude Vision 응답 텍스트를 OcrResult로 파싱한다.
+    """Vision API 응답 텍스트를 OcrResult로 파싱한다.
 
     1차: JSON 파싱 시도
     2차: 정규식 fallback
@@ -329,7 +327,7 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
 
     3중 에러 방어:
       1차 — 이미지 로드 실패
-      2차 — Claude API 호출 실패
+      2차 — OpenAI API 호출 실패
       3차 — 응답 파싱 실패 (내부에서 정규식 fallback)
 
     Args:
@@ -348,76 +346,76 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
         logger.error("이미지 로드 에러: %s", e)
         return OcrResult(raw_text=f"이미지 로드 실패: {e}", success=False)
 
-    # ── 2차: Claude API 호출 ──
+    # ── 2차: OpenAI GPT-4o Vision API 호출 ──
     try:
-        client = _get_client()
-        response = await client.messages.create(
-            model=VISION_MODEL,
-            max_tokens=MAX_TOKENS,
-            system=OCR_SYSTEM_PROMPT,
-            messages=[
+        api_key = _get_api_key()
+        data_url = f"data:{media_type};base64,{b64_data}"
+
+        payload = {
+            "model": VISION_MODEL,
+            "max_tokens": MAX_TOKENS,
+            "messages": [
+                {"role": "system", "content": OCR_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
-                        ImageBlockParam(
-                            type="image",
-                            source={
-                                "type": "base64",
-                                "media_type": media_type,  # type: ignore[typeddict-item]
-                                "data": b64_data,
-                            },
-                        ),
-                        TextBlockParam(
-                            type="text",
-                            text=OCR_USER_PROMPT,
-                        ),
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        },
+                        {
+                            "type": "text",
+                            "text": OCR_USER_PROMPT,
+                        },
                     ],
-                }
+                },
             ],
-        )
+        }
 
-        # 응답 텍스트 추출
-        response_text = ""
-        for block in response.content:
-            if block.type == "text":
-                response_text += block.text
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                OPENAI_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
 
-        if not response_text.strip():
+        if response.status_code == 401:
+            logger.error("OpenAI API 인증 실패")
+            return OcrResult(raw_text="API 인증 실패: 잘못된 API 키", success=False)
+
+        if response.status_code == 429:
+            logger.error("OpenAI API 요청 한도 초과")
+            return OcrResult(raw_text="API 요청 한도 초과", success=False)
+
+        if response.status_code != 200:
+            error_body = response.text
+            logger.error("OpenAI API 에러 %d: %s", response.status_code, error_body)
             return OcrResult(
-                raw_text="Claude Vision 응답이 비어있습니다.",
+                raw_text=f"API 에러 ({response.status_code}): {error_body[:300]}",
                 success=False,
             )
 
-    except anthropic.AuthenticationError as e:
-        logger.error("Claude API 인증 실패: %s", e)
-        return OcrResult(
-            raw_text=f"API 인증 실패: {e}",
-            success=False,
-        )
-    except anthropic.RateLimitError as e:
-        logger.error("Claude API 요청 한도 초과: %s", e)
-        return OcrResult(
-            raw_text=f"API 요청 한도 초과: {e}",
-            success=False,
-        )
-    except anthropic.APIConnectionError as e:
-        logger.error("Claude API 연결 실패: %s", e)
-        return OcrResult(
-            raw_text=f"API 연결 실패: {e}",
-            success=False,
-        )
-    except anthropic.APIError as e:
-        logger.error("Claude API 에러: %s", e)
-        return OcrResult(
-            raw_text=f"API 에러: {e}",
-            success=False,
-        )
+        resp_json = response.json()
+        response_text = resp_json["choices"][0]["message"]["content"]
+
+        if not response_text.strip():
+            return OcrResult(
+                raw_text="GPT-4o Vision 응답이 비어있습니다.",
+                success=False,
+            )
+
+    except httpx.ConnectError as e:
+        logger.error("OpenAI API 연결 실패: %s", e)
+        return OcrResult(raw_text=f"API 연결 실패: {e}", success=False)
+    except httpx.TimeoutException as e:
+        logger.error("OpenAI API 타임아웃: %s", e)
+        return OcrResult(raw_text=f"API 타임아웃: {e}", success=False)
     except Exception as e:
         logger.error("예상치 못한 에러: %s", e)
-        return OcrResult(
-            raw_text=f"OCR 처리 실패: {e}",
-            success=False,
-        )
+        return OcrResult(raw_text=f"OCR 처리 실패: {e}", success=False)
 
     # ── 3차: 응답 파싱 (내부에서 JSON → 정규식 fallback) ──
     return _parse_ocr_response(response_text)
