@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}toctoc — 영수증 정리왕{% endblock %}</title>
+
+    <!-- Pretendard 폰트 -->
+    <link rel="stylesheet" as="style" crossorigin
+          href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        'off-white': '#FAFAF8',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        }
+        /* HTMX 로딩 인디케이터 */
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator,
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+        /* 토스트 알림 */
+        .toast {
+            animation: toast-in 0.3s ease-out, toast-out 0.3s ease-in 2.7s forwards;
+        }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(1rem); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes toast-out {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-off-white min-h-screen overflow-x-hidden"
+      x-data="{ toast: '', toastType: 'success' }"
+      @show-toast.window="toast = $event.detail.message; toastType = $event.detail.type || 'success'; setTimeout(() => toast = '', 3000)">
+
+    <!-- 네비게이션 -->
+    <nav class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/" class="text-xl font-bold text-gray-900 no-underline">
+                toctoc
+            </a>
+            <div class="flex items-center gap-2">
+                <a href="/stats"
+                   class="min-h-[48px] min-w-[48px] flex items-center justify-center text-base text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-100 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                </a>
+                <a href="/upload"
+                   class="min-h-[48px] min-w-[48px] flex items-center justify-center text-base text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors px-4 font-medium">
+                    + 등록
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 메인 콘텐츠 -->
+    <main class="max-w-lg mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- 토스트 알림 -->
+    <div x-show="toast"
+         x-transition
+         class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+        <div class="toast px-6 py-3 rounded-lg shadow-sm text-base font-medium"
+             :class="toastType === 'error' ? 'bg-red-500 text-white' : 'bg-green-500 text-white'"
+             x-text="toast">
+        </div>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

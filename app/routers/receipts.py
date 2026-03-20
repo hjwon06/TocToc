@@ -1,0 +1,366 @@
+"""영수증 CRUD 라우터 + 페이지 라우터.
+
+A4 비즈니스 에이전트 소유 파일.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from math import ceil
+
+from fastapi import APIRouter, Depends, Form, Query, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.database import get_db
+from app.models import Receipt
+from app.services.image import (
+    create_thumbnail,
+    delete_image,
+    get_image_url,
+    get_thumbnail_url,
+)
+from app.services.ocr import extract_receipt_data
+from skills.upload_skill import save_upload, validate_file_size
+
+logger = logging.getLogger(__name__)
+
+templates = Jinja2Templates(directory="app/templates")
+
+# ── API 라우터 ──────────────────────────────────────
+
+router = APIRouter(prefix="/api/receipts", tags=["receipts"])
+
+
+def _receipt_to_dict(receipt: Receipt) -> dict:
+    """Receipt 모델을 딕셔너리로 변환."""
+    return {
+        "id": receipt.id,
+        "image_path": receipt.image_path,
+        "image_url": get_image_url(receipt.image_path),
+        "thumbnail_url": get_thumbnail_url(receipt.image_path),
+        "receipt_date": receipt.receipt_date.isoformat() if receipt.receipt_date else None,
+        "amount": receipt.amount,
+        "is_manual": receipt.is_manual,
+        "ocr_raw": receipt.ocr_raw,
+        "created_at": receipt.created_at.isoformat() if receipt.created_at else None,
+        "updated_at": receipt.updated_at.isoformat() if receipt.updated_at else None,
+    }
+
+
+@router.post("/upload")
+async def upload_receipts(
+    request: Request,
+    files: list[UploadFile],
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """영수증 이미지 업로드 + OCR 처리.
+
+    여러 장 업로드 가능. 각 파일에 대해:
+    1. 파일 크기 검증
+    2. 파일 저장 (upload_skill)
+    3. 썸네일 생성
+    4. OCR 추출
+    5. DB 저장
+    """
+    results: list[dict] = []
+    errors: list[str] = []
+
+    for file in files:
+        try:
+            # 파일 크기 검증
+            if not await validate_file_size(file, settings.MAX_FILE_SIZE_MB):
+                errors.append(
+                    f"{file.filename}: 파일 크기 초과 ({settings.MAX_FILE_SIZE_MB}MB 제한)"
+                )
+                continue
+
+            # 파일 저장
+            try:
+                image_path = await save_upload(file, settings.UPLOAD_DIR)
+            except ValueError as e:
+                errors.append(f"{file.filename}: {e}")
+                continue
+            except IOError as e:
+                errors.append(f"{file.filename}: {e}")
+                continue
+
+            # 썸네일 생성
+            create_thumbnail(image_path)
+
+            # OCR 추출
+            try:
+                ocr_result = await extract_receipt_data(image_path)
+            except Exception as e:
+                logger.error("OCR 실패: %s — %s", file.filename, e)
+                ocr_result = None
+
+            # DB 저장
+            if ocr_result and ocr_result.success:
+                receipt = Receipt(
+                    image_path=image_path,
+                    receipt_date=ocr_result.receipt_date,
+                    amount=ocr_result.amount,
+                    is_manual=False,
+                    ocr_raw=ocr_result.raw_text,
+                )
+            else:
+                # OCR 실패 시
+                receipt = Receipt(
+                    image_path=image_path,
+                    receipt_date=None,
+                    amount=None,
+                    is_manual=True,
+                    ocr_raw=ocr_result.raw_text if ocr_result else "OCR 처리 실패",
+                )
+
+            db.add(receipt)
+            await db.flush()
+            results.append(_receipt_to_dict(receipt))
+
+        except Exception as e:
+            logger.error("업로드 처리 실패: %s — %s", file.filename, e)
+            errors.append(f"{file.filename}: 처리 중 오류 발생")
+
+    # HX-Request이면 partial HTML 반환
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        return templates.TemplateResponse(
+            "partials/receipt_list.html",
+            {
+                "request": request,
+                "receipts": results,
+                "errors": errors,
+                "is_upload_result": True,
+            },
+        )
+
+    return JSONResponse(
+        content={
+            "uploaded": results,
+            "errors": errors,
+            "total_uploaded": len(results),
+        },
+        status_code=201 if results else 400,
+    )
+
+
+@router.get("/")
+async def list_receipts(
+    request: Request,
+    month: str | None = Query(default=None, description="월 필터 (YYYY-MM)"),
+    sort: str = Query(default="date_desc", description="정렬"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """영수증 목록 조회 (페이지네이션 + 필터 + 정렬)."""
+    # 기본 쿼리
+    query = select(Receipt)
+    count_query = select(func.count(Receipt.id))
+
+    # 월 필터
+    if month:
+        try:
+            year, mon = month.split("-")
+            start_date = date(int(year), int(mon), 1)
+            if int(mon) == 12:
+                end_date = date(int(year) + 1, 1, 1)
+            else:
+                end_date = date(int(year), int(mon) + 1, 1)
+            query = query.where(
+                Receipt.receipt_date >= start_date,
+                Receipt.receipt_date < end_date,
+            )
+            count_query = count_query.where(
+                Receipt.receipt_date >= start_date,
+                Receipt.receipt_date < end_date,
+            )
+        except (ValueError, IndexError):
+            pass  # 잘못된 형식 무시
+
+    # 정렬
+    if sort == "date_asc":
+        query = query.order_by(Receipt.receipt_date.asc().nullslast(), Receipt.created_at.asc())
+    elif sort == "amount_desc":
+        query = query.order_by(Receipt.amount.desc().nullslast(), Receipt.created_at.desc())
+    elif sort == "amount_asc":
+        query = query.order_by(Receipt.amount.asc().nullslast(), Receipt.created_at.asc())
+    else:  # date_desc (기본)
+        query = query.order_by(Receipt.receipt_date.desc().nullsfirst(), Receipt.created_at.desc())
+
+    # 전체 건수
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    total_pages = ceil(total / size) if total > 0 else 1
+
+    # 페이지네이션
+    offset = (page - 1) * size
+    query = query.offset(offset).limit(size)
+
+    result = await db.execute(query)
+    receipts = result.scalars().all()
+    receipt_dicts = [_receipt_to_dict(r) for r in receipts]
+
+    # HX-Request이면 partial HTML 반환
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        return templates.TemplateResponse(
+            "partials/receipt_list.html",
+            {
+                "request": request,
+                "receipts": receipt_dicts,
+                "page": page,
+                "size": size,
+                "total": total,
+                "total_pages": total_pages,
+            },
+        )
+
+    return JSONResponse(
+        content={
+            "items": receipt_dicts,
+            "page": page,
+            "size": size,
+            "total": total,
+            "total_pages": total_pages,
+        }
+    )
+
+
+@router.get("/{receipt_id}")
+async def get_receipt(
+    receipt_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """영수증 상세 조회."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        return JSONResponse(content={"error": "영수증을 찾을 수 없습니다."}, status_code=404)
+
+    return JSONResponse(content=_receipt_to_dict(receipt))
+
+
+@router.put("/{receipt_id}")
+async def update_receipt(
+    receipt_id: int,
+    request: Request,
+    receipt_date: str | None = Form(default=None),
+    amount: int | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """영수증 수정 (날짜, 금액)."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        return JSONResponse(content={"error": "영수증을 찾을 수 없습니다."}, status_code=404)
+
+    # 날짜 업데이트
+    if receipt_date is not None:
+        if receipt_date == "":
+            receipt.receipt_date = None
+        else:
+            try:
+                receipt.receipt_date = date.fromisoformat(receipt_date)
+            except ValueError:
+                return JSONResponse(
+                    content={"error": "날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)"},
+                    status_code=400,
+                )
+
+    # 금액 업데이트
+    if amount is not None:
+        receipt.amount = amount
+
+    receipt.is_manual = True
+    await db.flush()
+    await db.refresh(receipt)
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        response = templates.TemplateResponse(
+            "partials/receipt_card.html",
+            {
+                "request": request,
+                "receipt": _receipt_to_dict(receipt),
+            },
+        )
+        response.headers["HX-Trigger"] = "receipt-updated"
+        return response
+
+    return JSONResponse(content=_receipt_to_dict(receipt))
+
+
+@router.delete("/{receipt_id}")
+async def delete_receipt(
+    receipt_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """영수증 삭제 (이미지 파일도 삭제)."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        return JSONResponse(content={"error": "영수증을 찾을 수 없습니다."}, status_code=404)
+
+    # 이미지 파일 삭제
+    delete_image(receipt.image_path)
+
+    # DB 삭제
+    await db.delete(receipt)
+    await db.flush()
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        response = HTMLResponse(content="", status_code=200)
+        response.headers["HX-Trigger"] = "receipt-deleted"
+        return response
+
+    return JSONResponse(content={"message": "삭제되었습니다."})
+
+
+# ── 페이지 라우터 ───────────────────────────────────
+
+page_router = APIRouter(tags=["pages"])
+
+
+@page_router.get("/", response_class=HTMLResponse)
+async def index_page(request: Request) -> HTMLResponse:
+    """메인 목록 페이지."""
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@page_router.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request) -> HTMLResponse:
+    """업로드 페이지."""
+    return templates.TemplateResponse(
+        "upload.html",
+        {"request": request, "max_file_size": settings.MAX_FILE_SIZE_MB},
+    )
+
+
+@page_router.get("/receipts/{receipt_id}", response_class=HTMLResponse)
+async def detail_page(
+    receipt_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """영수증 상세/수정 페이지."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        return templates.TemplateResponse(
+            "detail.html",
+            {"request": request, "receipt": None, "error": "영수증을 찾을 수 없습니다."},
+            status_code=404,
+        )
+
+    return templates.TemplateResponse(
+        "detail.html",
+        {"request": request, "receipt": _receipt_to_dict(receipt)},
+    )

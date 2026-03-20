@@ -21,9 +21,11 @@ pydantic-settings==2.7.1
 # Utils
 python-dotenv==1.0.1
 httpx==0.28.1
+python-dateutil==2.9.0.post0
 
 # Dev/Test
 pytest==8.3.4
 pytest-asyncio==0.25.0
+aiosqlite==0.22.1
 ruff==0.8.6
 mypy==1.14.1

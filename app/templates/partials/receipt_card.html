@@ -1,0 +1,43 @@
+{# 단일 영수증 카드 — receipt 변수 필요 #}
+<div id="receipt-{{ receipt.id }}" class="bg-white rounded-lg shadow-sm p-4">
+    <a href="/receipts/{{ receipt.id }}" class="flex gap-4 no-underline text-gray-900">
+        <!-- 썸네일 -->
+        <div class="flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-gray-100">
+            <img src="{{ receipt.thumbnail_url }}"
+                 alt="영수증"
+                 class="w-full h-full object-cover"
+                 loading="lazy">
+        </div>
+
+        <!-- 정보 -->
+        <div class="flex-1 min-w-0">
+            <div class="flex items-start justify-between">
+                <div>
+                    {% if receipt.amount is not none %}
+                    <p class="text-lg font-bold text-gray-900">
+                        {{ "{:,}".format(receipt.amount) }}원
+                    </p>
+                    {% else %}
+                    <p class="text-lg font-bold text-gray-400">
+                        금액 미입력
+                    </p>
+                    {% endif %}
+                </div>
+
+                {% if receipt.is_manual %}
+                <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-lg flex-shrink-0">
+                    수동
+                </span>
+                {% endif %}
+            </div>
+
+            <p class="text-sm text-gray-500 mt-1">
+                {% if receipt.receipt_date %}
+                {{ receipt.receipt_date }}
+                {% else %}
+                날짜 미입력
+                {% endif %}
+            </p>
+        </div>
+    </a>
+</div>

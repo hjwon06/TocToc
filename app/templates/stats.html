@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}toctoc — 통계{% endblock %}
+
+{% block content %}
+<div x-data="statsApp()" x-init="init()">
+    <h1 class="text-2xl font-bold text-gray-900 mb-6">통계</h1>
+
+    <!-- 월 선택 -->
+    <div class="mb-6">
+        <input type="month"
+               x-model="selectedMonth"
+               @change="loadStats()"
+               class="w-full min-h-[48px] px-3 text-base rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+    </div>
+
+    <!-- 요약 카드 -->
+    <div class="grid grid-cols-2 gap-3 mb-6">
+        <div class="bg-white rounded-lg shadow-sm p-4">
+            <p class="text-sm text-gray-500 mb-1">영수증 수</p>
+            <p class="text-xl font-bold text-gray-900" x-text="stats.count + '건'">-</p>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+            <p class="text-sm text-gray-500 mb-1">총 지출</p>
+            <p class="text-xl font-bold text-gray-900" x-text="formatAmount(stats.total)">-</p>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+            <p class="text-sm text-gray-500 mb-1">평균 지출</p>
+            <p class="text-xl font-bold text-gray-900" x-text="formatAmount(stats.avg)">-</p>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-4">
+            <p class="text-sm text-gray-500 mb-1">미분류</p>
+            <p class="text-xl font-bold"
+               :class="stats.unclassified > 0 ? 'text-yellow-600' : 'text-gray-900'"
+               x-text="stats.unclassified + '건'">-</p>
+        </div>
+    </div>
+
+    <!-- 최소/최대 -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <div class="flex justify-between items-center">
+            <div>
+                <p class="text-sm text-gray-500">최소 결제</p>
+                <p class="text-base font-medium text-gray-900" x-text="stats.min ? formatAmount(stats.min) : '-'">-</p>
+            </div>
+            <div class="text-right">
+                <p class="text-sm text-gray-500">최대 결제</p>
+                <p class="text-base font-medium text-gray-900" x-text="stats.max ? formatAmount(stats.max) : '-'">-</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 6개월 추이 차트 -->
+    <div class="bg-white rounded-lg shadow-sm p-4">
+        <h2 class="text-lg font-bold text-gray-900 mb-4">최근 6개월 추이</h2>
+        <div class="relative" style="min-height: 250px;">
+            <canvas id="trendChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function statsApp() {
+    return {
+        selectedMonth: '{{ current_month }}',
+        stats: {
+            count: 0,
+            total: 0,
+            avg: 0,
+            min: null,
+            max: null,
+            unclassified: 0,
+        },
+        chart: null,
+
+        async init() {
+            await this.loadStats();
+            await this.loadTrend();
+        },
+
+        formatAmount(amount) {
+            if (amount === null || amount === undefined || amount === 0) return '0원';
+            return new Intl.NumberFormat('ko-KR').format(amount) + '원';
+        },
+
+        async loadStats() {
+            try {
+                const res = await fetch(`/api/stats/?month=${this.selectedMonth}`);
+                if (res.ok) {
+                    this.stats = await res.json();
+                }
+            } catch (e) {
+                console.error('통계 로드 실패:', e);
+            }
+        },
+
+        async loadTrend() {
+            try {
+                const res = await fetch('/api/stats/monthly?months=6');
+                if (!res.ok) return;
+
+                const data = await res.json();
+                const trend = data.trend || [];
+
+                const labels = trend.map(t => {
+                    const [y, m] = t.month.split('-');
+                    return `${parseInt(m)}월`;
+                });
+                const counts = trend.map(t => t.count);
+                const totals = trend.map(t => t.total);
+
+                this.renderChart(labels, counts, totals);
+            } catch (e) {
+                console.error('추이 로드 실패:', e);
+            }
+        },
+
+        renderChart(labels, counts, totals) {
+            const ctx = document.getElementById('trendChart');
+            if (!ctx) return;
+
+            if (this.chart) {
+                this.chart.destroy();
+            }
+
+            this.chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '지출 합계',
+                            data: totals,
+                            backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                            borderColor: 'rgb(59, 130, 246)',
+                            borderWidth: 1,
+                            borderRadius: 4,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: '영수증 수',
+                            data: counts,
+                            type: 'line',
+                            borderColor: 'rgb(234, 88, 12)',
+                            backgroundColor: 'rgba(234, 88, 12, 0.1)',
+                            borderWidth: 2,
+                            pointRadius: 4,
+                            pointBackgroundColor: 'rgb(234, 88, 12)',
+                            tension: 0.3,
+                            yAxisID: 'y1',
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            ticks: {
+                                callback: function(value) {
+                                    if (value >= 10000) {
+                                        return (value / 10000) + '만';
+                                    }
+                                    return new Intl.NumberFormat('ko-KR').format(value);
+                                },
+                                font: { family: 'Pretendard', size: 12 },
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)',
+                            },
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            ticks: {
+                                stepSize: 1,
+                                font: { family: 'Pretendard', size: 12 },
+                            },
+                            grid: {
+                                drawOnChartArea: false,
+                            },
+                        },
+                        x: {
+                            ticks: {
+                                font: { family: 'Pretendard', size: 12 },
+                            },
+                            grid: {
+                                display: false,
+                            },
+                        },
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                font: { family: 'Pretendard', size: 13 },
+                                usePointStyle: true,
+                            },
+                        },
+                        tooltip: {
+                            titleFont: { family: 'Pretendard' },
+                            bodyFont: { family: 'Pretendard' },
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.datasetIndex === 0) {
+                                        return '지출: ' + new Intl.NumberFormat('ko-KR').format(context.raw) + '원';
+                                    }
+                                    return '영수증: ' + context.raw + '건';
+                                },
+                            },
+                        },
+                    },
+                },
+            });
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}toctoc — 영수증 상세{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="text-center py-16">
+    <p class="text-base text-gray-500">{{ error }}</p>
+    <a href="/" class="text-base text-blue-600 hover:text-blue-700 font-medium mt-4 inline-block">
+        &larr; 목록으로
+    </a>
+</div>
+{% elif receipt %}
+<div x-data="{
+    editing: false,
+    editDate: '{{ receipt.receipt_date or '' }}',
+    editAmount: '{{ receipt.amount or '' }}',
+    deleting: false
+}">
+    <!-- 뒤로가기 -->
+    <div class="mb-4">
+        <a href="/"
+           class="min-h-[48px] inline-flex items-center text-base text-gray-600 hover:text-gray-900 no-underline">
+            &larr; 목록
+        </a>
+    </div>
+
+    <!-- 이미지 -->
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden mb-4">
+        <img src="{{ receipt.image_url }}"
+             alt="영수증 이미지"
+             class="w-full object-contain max-h-[500px]">
+    </div>
+
+    <!-- 정보 카드 -->
+    <div id="receipt-detail" class="bg-white rounded-lg shadow-sm p-4 mb-4">
+        <template x-if="!editing">
+            <div>
+                <div class="flex items-start justify-between mb-4">
+                    <div>
+                        {% if receipt.amount is not none %}
+                        <p class="text-2xl font-bold text-gray-900">
+                            {{ "{:,}".format(receipt.amount) }}원
+                        </p>
+                        {% else %}
+                        <p class="text-2xl font-bold text-gray-400">
+                            금액 미입력
+                        </p>
+                        {% endif %}
+                    </div>
+                    {% if receipt.is_manual %}
+                    <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-lg">
+                        수동 입력
+                    </span>
+                    {% endif %}
+                </div>
+
+                <dl class="space-y-3">
+                    <div class="flex justify-between">
+                        <dt class="text-base text-gray-500">날짜</dt>
+                        <dd class="text-base text-gray-900">
+                            {{ receipt.receipt_date or '미입력' }}
+                        </dd>
+                    </div>
+                    <div class="flex justify-between">
+                        <dt class="text-base text-gray-500">등록일</dt>
+                        <dd class="text-base text-gray-900">
+                            {{ receipt.created_at[:10] if receipt.created_at else '-' }}
+                        </dd>
+                    </div>
+                </dl>
+
+                {% if receipt.ocr_raw %}
+                <details class="mt-4">
+                    <summary class="text-sm text-gray-400 cursor-pointer hover:text-gray-600">
+                        OCR 원본 텍스트
+                    </summary>
+                    <pre class="mt-2 p-3 bg-gray-50 rounded-lg text-sm text-gray-600 whitespace-pre-wrap overflow-x-hidden">{{ receipt.ocr_raw }}</pre>
+                </details>
+                {% endif %}
+            </div>
+        </template>
+
+        <!-- 수정 모드 -->
+        <template x-if="editing">
+            <form hx-put="/api/receipts/{{ receipt.id }}"
+                  hx-target="#receipt-detail"
+                  hx-swap="outerHTML"
+                  @htmx:after-request="editing = false; $dispatch('show-toast', {message: '수정 완료', type: 'success'})">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-base text-gray-700 font-medium mb-1">날짜</label>
+                        <input type="date"
+                               name="receipt_date"
+                               x-model="editDate"
+                               class="w-full min-h-[48px] px-3 text-base rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-base text-gray-700 font-medium mb-1">금액 (원)</label>
+                        <input type="number"
+                               name="amount"
+                               x-model="editAmount"
+                               placeholder="0"
+                               min="0"
+                               class="w-full min-h-[48px] px-3 text-base rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div class="flex gap-2">
+                        <button type="submit"
+                                class="flex-1 min-h-[48px] text-base font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+                            저장
+                        </button>
+                        <button type="button"
+                                @click="editing = false"
+                                class="flex-1 min-h-[48px] text-base font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                            취소
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </template>
+    </div>
+
+    <!-- 액션 버튼 -->
+    <div class="flex gap-2">
+        <button @click="editing = true"
+                x-show="!editing"
+                class="flex-1 min-h-[48px] text-base font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors">
+            수정하기
+        </button>
+        <button @click="deleting = true"
+                x-show="!editing"
+                class="flex-1 min-h-[48px] text-base font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors">
+            삭제하기
+        </button>
+    </div>
+
+    <!-- 삭제 확인 모달 -->
+    <template x-if="deleting">
+        <div class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+             @click.self="deleting = false">
+            <div class="bg-white rounded-lg shadow-sm p-6 w-full max-w-sm">
+                <p class="text-lg font-bold text-gray-900 mb-2">영수증 삭제</p>
+                <p class="text-base text-gray-600 mb-6">이 영수증을 삭제하시겠습니까?</p>
+                <div class="flex gap-2">
+                    <button hx-delete="/api/receipts/{{ receipt.id }}"
+                            hx-swap="none"
+                            @htmx:after-request="window.location.href = '/'"
+                            class="flex-1 min-h-[48px] text-base font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors">
+                        삭제
+                    </button>
+                    <button @click="deleting = false"
+                            class="flex-1 min-h-[48px] text-base font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                        취소
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+</div>
+{% endif %}
+{% endblock %}

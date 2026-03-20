@@ -50,10 +50,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 # ── Routers ──────────────────────────────────────────
-# A4가 구현 후 주석 해제
-# from app.routers import receipts, stats
-# app.include_router(receipts.router)
-# app.include_router(stats.router)
+from app.routers import receipts, stats  # noqa: E402
+
+app.include_router(receipts.router)
+app.include_router(receipts.page_router)
+app.include_router(stats.router)
+app.include_router(stats.page_router)
 
 
 @app.get("/health")
