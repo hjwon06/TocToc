@@ -16,6 +16,10 @@ THUMBNAIL_SUFFIX = "_thumb"
 THUMBNAIL_FORMAT = "JPEG"
 THUMBNAIL_QUALITY = 80
 
+# 이미지 압축 설정
+COMPRESS_MAX_LONG_SIDE = 1920
+COMPRESS_QUALITY = 85
+
 
 def image_path_to_url(image_path: str) -> str:
     """저장된 이미지 경로를 URL 경로로 변환한다.
@@ -67,6 +71,49 @@ def create_thumbnail(image_path: str) -> str | None:
     except Exception as e:
         logger.error("썸네일 생성 실패: %s — %s", image_path, e)
         return None
+
+
+def compress_image(image_path: str) -> bool:
+    """업로드된 이미지를 압축 + 리사이즈한다.
+
+    긴 변 최대 1920px, JPEG quality 85.
+    이미 작은 이미지는 건드리지 않는다.
+
+    Returns:
+        True이면 압축 완료, False이면 실패 또는 스킵.
+    """
+    try:
+        path = Path(image_path)
+        if not path.exists():
+            logger.warning("압축 실패 — 파일 없음: %s", image_path)
+            return False
+
+        with Image.open(path) as img:
+            w, h = img.size
+            long_side = max(w, h)
+
+            # 이미 작으면 품질만 재압축
+            if long_side <= COMPRESS_MAX_LONG_SIDE:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(path, format="JPEG", quality=COMPRESS_QUALITY)
+                return True
+
+            # 비율 유지 리사이즈
+            ratio = COMPRESS_MAX_LONG_SIDE / long_side
+            new_size = (int(w * ratio), int(h * ratio))
+            resized = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            if resized.mode in ("RGBA", "P"):
+                resized = resized.convert("RGB")
+            resized.save(path, format="JPEG", quality=COMPRESS_QUALITY)
+
+        logger.info("이미지 압축 완료: %s (%dx%d → %dx%d)", image_path, w, h, *new_size)
+        return True
+
+    except Exception as e:
+        logger.error("이미지 압축 실패: %s — %s", image_path, e)
+        return False
 
 
 def delete_image(image_path: str) -> bool:

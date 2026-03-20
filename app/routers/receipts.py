@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import Receipt
 from app.services.image import (
+    compress_image,
     create_thumbnail,
     delete_image,
     get_image_url,
@@ -55,6 +56,48 @@ def _receipt_to_dict(receipt: Receipt) -> dict:
         "created_at": receipt.created_at.isoformat() if receipt.created_at else None,
         "updated_at": receipt.updated_at.isoformat() if receipt.updated_at else None,
     }
+
+
+@router.post("/{receipt_id}/retry-ocr")
+async def retry_ocr(
+    receipt_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """영수증 OCR 재시도."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        return JSONResponse(content={"error": "영수증을 찾을 수 없습니다."}, status_code=404)
+
+    try:
+        ocr_result = await extract_receipt_data(receipt.image_path)
+    except Exception as e:
+        logger.error("재OCR 실패: %s — %s", receipt_id, e)
+        ocr_result = None
+
+    if ocr_result and ocr_result.success:
+        receipt.receipt_date = ocr_result.receipt_date
+        receipt.amount = ocr_result.amount
+        receipt.is_manual = False
+        receipt.ocr_raw = ocr_result.raw_text
+    else:
+        receipt.ocr_raw = ocr_result.raw_text if ocr_result else "OCR 재시도 실패"
+
+    await db.flush()
+    await db.refresh(receipt)
+
+    is_htmx = request.headers.get("HX-Request") == "true"
+    if is_htmx:
+        response = templates.TemplateResponse(
+            "partials/receipt_card.html",
+            {"request": request, "receipt": _receipt_to_dict(receipt)},
+        )
+        if ocr_result and ocr_result.success:
+            response.headers["HX-Trigger"] = "show-toast"
+        return response
+
+    return JSONResponse(content=_receipt_to_dict(receipt))
 
 
 @router.post("/upload")
@@ -102,6 +145,7 @@ async def upload_receipts(
             except IOError as e:
                 errors.append(f"{file.filename}: {e}")
                 continue
+            compress_image(image_path)
             create_thumbnail(image_path)
             saved.append((file.filename or "unknown", image_path))
         except Exception as e:
@@ -246,6 +290,55 @@ async def list_receipts(
             "total": total,
             "total_pages": total_pages,
         }
+    )
+
+
+@router.get("/invoice-preview")
+async def invoice_preview(
+    request: Request,
+    month: str = Query(description="월 (YYYY-MM)"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """인보이스 미리보기 — HTMX partial."""
+    try:
+        year_str, mon_str = month.split("-")
+        year, mon = int(year_str), int(mon_str)
+        start_date = date(year, mon, 1)
+        end_date = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    except (ValueError, IndexError):
+        return HTMLResponse("<p class='text-red-500'>잘못된 월 형식입니다.</p>")
+
+    from app.services.invoice import AMOUNT_CAP
+
+    query = (
+        select(Receipt)
+        .where(
+            (Receipt.receipt_date >= start_date) & (Receipt.receipt_date < end_date)
+        )
+        .order_by(Receipt.receipt_date.asc().nullslast())
+    )
+    result = await db.execute(query)
+    receipts = result.scalars().all()
+
+    preview_data = []
+    total_capped = 0
+    for r in receipts:
+        amt = r.amount if r.amount and r.amount > 0 else 0
+        capped = min(amt, AMOUNT_CAP)
+        total_capped += capped
+        preview_data.append({
+            "date": r.receipt_date.isoformat() if r.receipt_date else None,
+            "capped_amount": capped,
+        })
+
+    return templates.TemplateResponse(
+        "partials/invoice_preview.html",
+        {
+            "request": request,
+            "receipts": preview_data,
+            "month": f"{year}-{mon:02d}",
+            "total_capped": total_capped,
+        },
     )
 
 
@@ -401,6 +494,17 @@ async def upload_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         "upload.html",
         {"request": request, "max_file_size": settings.MAX_FILE_SIZE_MB},
+    )
+
+
+@page_router.get("/invoice", response_class=HTMLResponse)
+async def invoice_page(request: Request) -> HTMLResponse:
+    """인보이스 페이지."""
+    today = date.today()
+    current_month = f"{today.year}-{today.month:02d}"
+    return templates.TemplateResponse(
+        "invoice.html",
+        {"request": request, "current_month": current_month},
     )
 
 

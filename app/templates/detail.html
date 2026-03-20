@@ -127,6 +127,19 @@
                 class="flex-1 min-h-[48px] text-base font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors">
             수정하기
         </button>
+        {% if receipt.is_manual %}
+        <button hx-post="/api/receipts/{{ receipt.id }}/retry-ocr"
+                hx-target="#receipt-detail"
+                hx-swap="outerHTML"
+                hx-indicator="#ocr-spinner"
+                x-show="!editing"
+                class="flex-1 min-h-[48px] text-base font-medium text-green-600 bg-green-50 hover:bg-green-100 rounded-lg transition-colors">
+            <span id="ocr-spinner" class="htmx-indicator">
+                <span class="inline-block w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin mr-1"></span>
+            </span>
+            재OCR
+        </button>
+        {% endif %}
         <button @click="deleting = true"
                 x-show="!editing"
                 class="flex-1 min-h-[48px] text-base font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors">

@@ -1,0 +1,33 @@
+{# 인보이스 미리보기 partial #}
+{% if receipts %}
+<div class="bg-white rounded-lg shadow-sm p-4">
+    <h2 class="text-lg font-bold text-gray-900 mb-4">
+        {{ month }} 식비 내역 ({{ receipts|length }}건)
+    </h2>
+
+    <div class="space-y-3">
+        {% for r in receipts %}
+        <div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
+            <span class="text-base text-gray-700">
+                {{ r.date or '날짜 미확인' }}
+            </span>
+            <span class="text-base font-medium text-gray-900">
+                ₩{{ "{:,}".format(r.capped_amount) }}
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- 합계 -->
+    <div class="mt-4 pt-4 border-t-2 border-gray-200 flex items-center justify-between">
+        <span class="text-base font-bold text-gray-900">합계</span>
+        <span class="text-lg font-bold text-blue-600">
+            ₩{{ "{:,}".format(total_capped) }}
+        </span>
+    </div>
+</div>
+{% else %}
+<div class="text-center py-12 text-gray-400">
+    <p class="text-base">해당 월에 등록된 영수증이 없습니다</p>
+</div>
+{% endif %}

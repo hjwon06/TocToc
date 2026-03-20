@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}toctoc — 인보이스{% endblock %}
+
+{% block content %}
+<div x-data="{ month: '{{ current_month }}' }">
+    <h1 class="text-2xl font-bold text-gray-900 mb-6">식비 인보이스</h1>
+
+    <!-- 월 선택 -->
+    <div class="flex gap-2 mb-6">
+        <input type="month"
+               x-model="month"
+               class="flex-1 min-h-[48px] px-3 text-base rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button hx-get="/api/receipts/invoice-preview"
+                :hx-vals="JSON.stringify({month: month})"
+                hx-target="#invoice-preview"
+                hx-swap="innerHTML"
+                class="min-h-[48px] px-6 text-base font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+            조회
+        </button>
+    </div>
+
+    <!-- 미리보기 -->
+    <div id="invoice-preview" class="mb-6">
+        <div class="text-center py-12 text-gray-400">
+            <p class="text-base">월을 선택하고 조회 버튼을 눌러주세요</p>
+        </div>
+    </div>
+
+    <!-- 다운로드 버튼 -->
+    <a :href="'/api/receipts/export?month=' + month"
+       download
+       class="w-full min-h-[48px] text-base font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors flex items-center justify-center gap-2 no-underline">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        DOCX 다운로드
+    </a>
+</div>
+{% endblock %}
