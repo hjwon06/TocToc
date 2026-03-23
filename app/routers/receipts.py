@@ -80,11 +80,9 @@ async def retry_ocr(
         ocr_result = None
 
     if ocr_result and ocr_result.success:
-        from dateutil.relativedelta import relativedelta
-
         ocr_date = ocr_result.receipt_date
         today = date.today()
-        date_min = date(today.year, today.month, 1) - relativedelta(months=1)
+        date_min = date(today.year, today.month, 1)
         if ocr_date and ocr_date < date_min:
             logger.warning("재OCR 날짜 비정상: %s (%s) → 미분류", receipt_id, ocr_date)
             ocr_date = None
@@ -141,8 +139,9 @@ async def upload_receipts(
         is_htmx = request.headers.get("HX-Request") == "true"
         if is_htmx:
             return templates.TemplateResponse(
-                "partials/receipt_list.html",
-                {"request": request, "receipts": [], "errors": [msg], "is_upload_result": True},
+                request=request,
+                name="partials/receipt_list.html",
+                context={"receipts": [], "errors": [msg], "is_upload_result": True},
             )
         return JSONResponse(content={"error": msg}, status_code=400)
 
@@ -187,10 +186,8 @@ async def upload_receipts(
     ocr_results = await asyncio.gather(*[_ocr_task(path) for _, path in saved])
 
     # ── Phase 3: DB 저장 ──
-    from dateutil.relativedelta import relativedelta
-
     today = date.today()
-    date_min = date(today.year, today.month, 1) - relativedelta(months=1)
+    date_min = date(today.year, today.month, 1)
 
     for (filename, image_path), ocr_result in zip(saved, ocr_results):
         if ocr_result and ocr_result.success:
@@ -223,9 +220,9 @@ async def upload_receipts(
     is_htmx = request.headers.get("HX-Request") == "true"
     if is_htmx:
         return templates.TemplateResponse(
-            "partials/receipt_list.html",
-            {
-                "request": request,
+            request=request,
+            name="partials/receipt_list.html",
+            context={
                 "receipts": results,
                 "errors": errors,
                 "is_upload_result": True,
@@ -303,9 +300,9 @@ async def list_receipts(
     is_htmx = request.headers.get("HX-Request") == "true"
     if is_htmx:
         return templates.TemplateResponse(
-            "partials/receipt_list.html",
-            {
-                "request": request,
+            request=request,
+            name="partials/receipt_list.html",
+            context={
                 "receipts": receipt_dicts,
                 "page": page,
                 "size": size,
@@ -364,9 +361,9 @@ async def invoice_preview(
         })
 
     return templates.TemplateResponse(
-        "partials/invoice_preview.html",
-        {
-            "request": request,
+        request=request,
+        name="partials/invoice_preview.html",
+        context={
             "receipts": preview_data,
             "month": f"{year}-{mon:02d}",
             "total_capped": total_capped,
@@ -469,9 +466,9 @@ async def update_receipt(
     is_htmx = request.headers.get("HX-Request") == "true"
     if is_htmx:
         response = templates.TemplateResponse(
-            "partials/receipt_card.html",
-            {
-                "request": request,
+            request=request,
+            name="partials/receipt_card.html",
+            context={
                 "receipt": _receipt_to_dict(receipt),
             },
         )
@@ -517,7 +514,7 @@ page_router = APIRouter(tags=["pages"])
 @page_router.get("/", response_class=HTMLResponse)
 async def index_page(request: Request) -> HTMLResponse:
     """메인 목록 페이지."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 
 @page_router.get("/unclassified", response_class=HTMLResponse)
@@ -536,8 +533,9 @@ async def unclassified_page(
     receipt_dicts = [_receipt_to_dict(r) for r in receipts]
 
     return templates.TemplateResponse(
-        "unclassified.html",
-        {"request": request, "receipts": receipt_dicts, "total": len(receipt_dicts)},
+        request=request,
+        name="unclassified.html",
+        context={"receipts": receipt_dicts, "total": len(receipt_dicts)},
     )
 
 
@@ -593,9 +591,9 @@ async def retry_all_ocr(
     success_count = len(receipts) - len(remaining_dicts)
 
     return templates.TemplateResponse(
-        "unclassified.html",
-        {
-            "request": request,
+        request=request,
+        name="unclassified.html",
+        context={
             "receipts": remaining_dicts,
             "total": len(remaining_dicts),
             "success_count": success_count,
@@ -607,8 +605,9 @@ async def retry_all_ocr(
 async def upload_page(request: Request) -> HTMLResponse:
     """업로드 페이지."""
     return templates.TemplateResponse(
-        "upload.html",
-        {"request": request, "max_file_size": settings.MAX_FILE_SIZE_MB},
+        request=request,
+        name="upload.html",
+        context={"max_file_size": settings.MAX_FILE_SIZE_MB},
     )
 
 
@@ -618,8 +617,9 @@ async def invoice_page(request: Request) -> HTMLResponse:
     today = date.today()
     current_month = f"{today.year}-{today.month:02d}"
     return templates.TemplateResponse(
-        "invoice.html",
-        {"request": request, "current_month": current_month},
+        request=request,
+        name="invoice.html",
+        context={"current_month": current_month},
     )
 
 
@@ -634,12 +634,14 @@ async def detail_page(
     receipt = result.scalar_one_or_none()
     if not receipt:
         return templates.TemplateResponse(
-            "detail.html",
-            {"request": request, "receipt": None, "error": "영수증을 찾을 수 없습니다."},
+            request=request,
+            name="detail.html",
+            context={"receipt": None, "error": "영수증을 찾을 수 없습니다."},
             status_code=404,
         )
 
     return templates.TemplateResponse(
-        "detail.html",
-        {"request": request, "receipt": _receipt_to_dict(receipt)},
+        request=request,
+        name="detail.html",
+        context={"receipt": _receipt_to_dict(receipt)},
     )

@@ -76,31 +76,34 @@ async def test_month_filter_accuracy(
     client: AsyncClient,
     mock_ocr,
 ) -> None:
-    """2월/3월 데이터 혼합 → 3월 필터 정확성."""
+    """이번 달/다른 달 데이터 혼합 → 필터 정확성."""
     from datetime import date as d
 
     from app.services.ocr import OcrResult
 
-    # 2월 2건
-    mock_ocr.return_value = OcrResult(
-        receipt_date=d(2026, 2, 15), amount=5000, raw_text="feb", success=True,
-    )
-    for _ in range(2):
-        await _upload_one(client)
+    today = d.today()
 
-    # 3월 3건
+    # 이번 달 3건
     mock_ocr.return_value = OcrResult(
-        receipt_date=d(2026, 3, 10), amount=8000, raw_text="mar", success=True,
+        receipt_date=d(today.year, today.month, 10), amount=8000, raw_text="this", success=True,
     )
     for _ in range(3):
         await _upload_one(client)
 
-    # 3월 필터
-    resp = await client.get("/api/receipts/", params={"month": "2026-03"})
+    # OCR 실패 2건 (미분류)
+    mock_ocr.return_value = OcrResult(
+        receipt_date=None, amount=None, raw_text="fail", success=False,
+    )
+    for _ in range(2):
+        await _upload_one(client)
+
+    # 이번 달 필터
+    month_str = f"{today.year}-{today.month:02d}"
+    resp = await client.get("/api/receipts/", params={"month": month_str})
     data = resp.json()
     assert data["total"] == 3
 
-    # 2월 필터
-    resp = await client.get("/api/receipts/", params={"month": "2026-02"})
+    # 전체 (필터 없음) → 5건
+    resp = await client.get("/api/receipts/")
     data = resp.json()
-    assert data["total"] == 2
+    assert data["total"] == 5

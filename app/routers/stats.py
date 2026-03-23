@@ -158,6 +158,7 @@ async def stats_page(request: Request) -> HTMLResponse:
     today = date.today()
     current_month = f"{today.year}-{today.month:02d}"
     return templates.TemplateResponse(
-        "stats.html",
-        {"request": request, "current_month": current_month},
+        request=request,
+        name="stats.html",
+        context={"current_month": current_month},
     )
