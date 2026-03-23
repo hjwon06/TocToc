@@ -5,10 +5,13 @@ QA 에이전트 소유.
 
 from __future__ import annotations
 
+from datetime import date as d
 from io import BytesIO
 
 import pytest
 from httpx import AsyncClient
+
+from app.services.ocr import OcrResult
 
 
 async def _upload_one(client: AsyncClient) -> dict:
@@ -38,7 +41,7 @@ async def test_update_persists(client: AsyncClient) -> None:
     updated = resp.json()
     assert updated["receipt_date"] == "2026-01-01"
     assert updated["amount_raw"] == 99000
-    assert updated["is_manual"] is True
+    assert updated["is_manual"] is False  # 날짜가 있으므로 미분류 아님
 
 
 @pytest.mark.asyncio
@@ -55,9 +58,18 @@ async def test_delete_removes_record(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pagination_boundary(client: AsyncClient) -> None:
+async def test_pagination_boundary(client: AsyncClient, mock_ocr) -> None:
     """21건 등록 → page=2, size=20 시 1건 반환."""
-    for _ in range(21):
+    # 각 건마다 다른 날짜를 사용하여 중복 교체 방지
+    for i in range(21):
+        day = (i % 28) + 1
+        month = 3 if i < 28 else 4
+        mock_ocr.return_value = OcrResult(
+            receipt_date=d(2026, month, day),
+            amount=1000 * (i + 1),
+            raw_text=f"mock_{i}",
+            success=True,
+        )
         await _upload_one(client)
 
     resp = await client.get("/api/receipts/", params={"page": 1, "size": 20})
@@ -83,11 +95,11 @@ async def test_month_filter_accuracy(
 
     today = d.today()
 
-    # 이번 달 3건
-    mock_ocr.return_value = OcrResult(
-        receipt_date=d(today.year, today.month, 10), amount=8000, raw_text="this", success=True,
-    )
-    for _ in range(3):
+    # 이번 달 3건 (각각 다른 날짜)
+    for day in [10, 11, 12]:
+        mock_ocr.return_value = OcrResult(
+            receipt_date=d(today.year, today.month, day), amount=8000, raw_text="this", success=True,
+        )
         await _upload_one(client)
 
     # OCR 실패 2건 (미분류)

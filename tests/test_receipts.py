@@ -169,7 +169,7 @@ async def test_update_receipt(
     data = resp.json()
     assert data["receipt_date"] == "2026-03-15"
     assert data["amount_raw"] == 25000
-    assert data["is_manual"] is True
+    assert data["is_manual"] is False  # 날짜가 있으므로 미분류 아님
 
 
 async def test_update_receipt_invalid_date(
@@ -387,3 +387,244 @@ async def test_detail_page_not_found(client: AsyncClient) -> None:
     """존재하지 않는 영수증 상세 페이지."""
     resp = await client.get("/receipts/9999")
     assert resp.status_code == 404
+
+
+# ── 같은 날짜 영수증 교체 테스트 ──────────────────────
+
+
+async def test_upload_replaces_same_date(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """같은 날짜 기존 건 있을 때 업로드 → 교체 확인."""
+    # 기존 영수증 생성 (3/19)
+    existing = await _create_receipt(
+        db_session,
+        receipt_date=date(2026, 3, 19),
+        amount=5000,
+        image_path="static/uploads/old.jpg",
+    )
+    await db_session.commit()
+    existing_id = existing.id
+
+    mock_ocr_result = OcrResult(
+        receipt_date=date(2026, 3, 19),
+        amount=12500,
+        store_name="새 가게",
+        raw_text="새 OCR 결과",
+        success=True,
+    )
+
+    with (
+        patch(
+            "app.routers.receipts.validate_file_size",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "app.routers.receipts.save_upload",
+            new_callable=AsyncMock,
+            return_value="static/uploads/new123.jpg",
+        ),
+        patch(
+            "app.routers.receipts.create_thumbnail",
+            return_value="static/uploads/new123_thumb.jpg",
+        ),
+        patch(
+            "app.routers.receipts.extract_receipt_data",
+            new_callable=AsyncMock,
+            return_value=mock_ocr_result,
+        ),
+        patch("app.routers.receipts.delete_image", return_value=True) as mock_del,
+    ):
+        resp = await client.post(
+            "/api/receipts/upload",
+            files=[("files", ("new.jpg", io.BytesIO(b"fake"), "image/jpeg"))],
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["total_uploaded"] == 1
+    assert data["replaced_count"] == 1
+    mock_del.assert_called_once_with("static/uploads/old.jpg")
+
+    # 기존 건이 삭제되었는지 확인
+    resp2 = await client.get(f"/api/receipts/{existing_id}")
+    assert resp2.status_code == 404
+
+
+async def test_upload_null_date_no_replace(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """OCR 실패(날짜 NULL) → 교체 없이 새 건 추가."""
+    existing = await _create_receipt(
+        db_session,
+        receipt_date=date(2026, 3, 19),
+        amount=5000,
+        image_path="static/uploads/old2.jpg",
+    )
+    await db_session.commit()
+
+    mock_ocr_result = OcrResult(
+        raw_text="OCR 실패",
+        success=False,
+    )
+
+    with (
+        patch(
+            "app.routers.receipts.validate_file_size",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "app.routers.receipts.save_upload",
+            new_callable=AsyncMock,
+            return_value="static/uploads/new456.jpg",
+        ),
+        patch(
+            "app.routers.receipts.create_thumbnail",
+            return_value=None,
+        ),
+        patch(
+            "app.routers.receipts.extract_receipt_data",
+            new_callable=AsyncMock,
+            return_value=mock_ocr_result,
+        ),
+        patch("app.routers.receipts.delete_image", return_value=True) as mock_del,
+    ):
+        resp = await client.post(
+            "/api/receipts/upload",
+            files=[("files", ("new.jpg", io.BytesIO(b"fake"), "image/jpeg"))],
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["total_uploaded"] == 1
+    assert data["replaced_count"] == 0
+    mock_del.assert_not_called()
+
+    # 기존 건이 여전히 존재
+    resp2 = await client.get(f"/api/receipts/{existing.id}")
+    assert resp2.status_code == 200
+
+
+async def test_update_date_replaces_existing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """수동 날짜 수정으로 중복 발생 → 기존 건 삭제."""
+    existing = await _create_receipt(
+        db_session,
+        receipt_date=date(2026, 3, 10),
+        amount=5000,
+        image_path="static/uploads/will_delete.jpg",
+    )
+    target = await _create_receipt(
+        db_session,
+        receipt_date=date(2026, 3, 5),
+        amount=8000,
+        image_path="static/uploads/keep.jpg",
+    )
+    await db_session.commit()
+    existing_id = existing.id
+
+    with patch("app.routers.receipts.delete_image", return_value=True) as mock_del:
+        resp = await client.put(
+            f"/api/receipts/{target.id}",
+            data={"receipt_date": "2026-03-10"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["receipt_date"] == "2026-03-10"
+    mock_del.assert_called_once_with("static/uploads/will_delete.jpg")
+
+    # 기존 건 삭제 확인
+    resp2 = await client.get(f"/api/receipts/{existing_id}")
+    assert resp2.status_code == 404
+
+
+async def test_update_date_no_duplicate(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """중복 없는 날짜로 수정 → 정상 업데이트."""
+    target = await _create_receipt(
+        db_session,
+        receipt_date=date(2026, 3, 5),
+        amount=8000,
+        image_path="static/uploads/target.jpg",
+    )
+    await db_session.commit()
+
+    with patch("app.routers.receipts.delete_image", return_value=True) as mock_del:
+        resp = await client.put(
+            f"/api/receipts/{target.id}",
+            data={"receipt_date": "2026-03-20"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["receipt_date"] == "2026-03-20"
+    mock_del.assert_not_called()
+
+
+async def test_upload_same_batch_duplicate(
+    client: AsyncClient,
+) -> None:
+    """같은 배치에서 같은 날짜 2장 → 마지막 건만 남음."""
+    mock_ocr_result = OcrResult(
+        receipt_date=date(2026, 3, 19),
+        amount=12500,
+        store_name="가게",
+        raw_text="OCR 결과",
+        success=True,
+    )
+
+    call_count = 0
+
+    async def _fake_save(file, upload_dir):
+        nonlocal call_count
+        call_count += 1
+        return f"static/uploads/batch_{call_count}.jpg"
+
+    with (
+        patch(
+            "app.routers.receipts.validate_file_size",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "app.routers.receipts.save_upload",
+            new_callable=AsyncMock,
+            side_effect=_fake_save,
+        ),
+        patch(
+            "app.routers.receipts.create_thumbnail",
+            return_value=None,
+        ),
+        patch(
+            "app.routers.receipts.extract_receipt_data",
+            new_callable=AsyncMock,
+            return_value=mock_ocr_result,
+        ),
+        patch("app.routers.receipts.delete_image", return_value=True),
+    ):
+        resp = await client.post(
+            "/api/receipts/upload",
+            files=[
+                ("files", ("a.jpg", io.BytesIO(b"fake1"), "image/jpeg")),
+                ("files", ("b.jpg", io.BytesIO(b"fake2"), "image/jpeg")),
+            ],
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["total_uploaded"] == 2
+    # 첫 번째 건이 두 번째 건에 의해 교체됨
+    assert data["replaced_count"] >= 1
+
+    # 목록 조회 → 같은 날짜는 1건만
+    resp2 = await client.get("/api/receipts/?month=2026-03")
+    data2 = resp2.json()
+    march_19 = [
+        r for r in data2["items"] if r["receipt_date"] == "2026-03-19"
+    ]
+    assert len(march_19) == 1

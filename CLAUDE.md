@@ -8,23 +8,24 @@
 - FastAPI + Jinja2 + HTMX + Alpine.js + Tailwind CSS
 - PostgreSQL (AsyncSession only)
 - Claude Vision API (OCR) — GPT-4o 아님
+- python-docx (인보이스 DOCX 내보내기)
 - Chart.js (월별 통계)
-- Docker Compose + Coolify
+- Docker Compose + Coolify (포트 8002)
 
 ## 에이전트 배치
 ```
 A0 인프라   ✅ 완료 — models, config, database, alembic, skills, docker
 A3 AI/OCR  ✅ 완료 — services/ocr.py (Claude Vision), tests/test_ocr.py (54 tests)
 A4 비즈니스 ✅ 완료 — routers, templates, services, 병렬 OCR (90 tests)
-QA 검증    ✅ 완료 — integration 9 + e2e 6 = 15 tests (총 105)
+QA 검증    ✅ 완료 — integration 11 + e2e 6 + invoice 15 + enhancements 9 (총 136)
 ```
 
 ## 파일 소유권
 ```
 A0: main.py, config.py, database.py, models.py, alembic/, skills/, docker-compose.yml, Dockerfile
 A3: services/ocr.py, tests/test_ocr.py
-A4: routers/receipts.py, routers/stats.py, services/image.py, templates/*, tests/test_receipts.py, tests/test_stats.py
-QA: tests/integration/, tests/e2e/
+A4: routers/receipts.py, routers/stats.py, services/image.py, services/invoice.py, templates/*, tests/test_receipts.py, tests/test_stats.py, tests/test_invoice.py
+QA: tests/integration/, tests/e2e/, tests/test_enhancements.py
 ```
 
 ## [NEVER] 프로젝트 금지
@@ -32,12 +33,15 @@ QA: tests/integration/, tests/e2e/
 - 동기 DB 세션 사용
 - 다른 에이전트 소유 파일 직접 수정
 - static/uploads/ 경로 하드코딩 (settings.UPLOAD_DIR 사용)
+- API 라우터에서 /export, /invoice-preview 등 문자열 경로를 /{id} 뒤에 배치 (라우트 순서 주의)
 
 ## [ALWAYS] 프로젝트 필수
 - 영수증 금액은 원(₩) 단위 정수 저장
 - OCR 실패 시 receipt_date=NULL, amount=NULL, ocr_raw에 에러 메시지 저장
+- 같은 날짜 영수증은 1건만 유지 (업로드/수정/재OCR 시 기존 건 자동 교체)
 - 목록 UI 페이지네이션 필수 (LEARNINGS #2)
 - 이미지 확장자 검증은 upload_skill 경유
+- 인보이스 금액 캡: ₩10,000 초과 → ₩10,000 표시, 합계도 캡 기준
 
 ## UI 디자인 토큰
 ```

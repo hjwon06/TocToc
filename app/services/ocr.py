@@ -1,4 +1,4 @@
-"""GPT-4o Vision OCR 서비스 — 영수증 이미지에서 날짜·금액·품목 추출.
+"""Naver CLOVA OCR 서비스 — 영수증 이미지에서 날짜·금액 추출.
 
 A3 AI/OCR 에이전트 소유 파일.
 """
@@ -9,6 +9,8 @@ import base64
 import json
 import logging
 import re
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -21,42 +23,19 @@ logger = logging.getLogger(__name__)
 
 # ── 상수 ──────────────────────────────────────────────
 
-SUPPORTED_VISION_TYPES: dict[str, str] = {
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "png": "image/png",
-    "gif": "image/gif",
-    "webp": "image/webp",
-    # HEIC는 변환 후 JPEG로 전송
+SUPPORTED_EXTENSIONS: set[str] = {"jpg", "jpeg", "png", "gif", "webp", "tiff", "bmp", "pdf"}
+
+# CLOVA OCR이 지원하는 format 값
+EXT_TO_FORMAT: dict[str, str] = {
+    "jpg": "jpg",
+    "jpeg": "jpg",
+    "png": "png",
+    "gif": "gif",
+    "webp": "webp",
+    "tiff": "tiff",
+    "bmp": "bmp",
+    "pdf": "pdf",
 }
-
-OCR_SYSTEM_PROMPT = (
-    "당신은 한국어 식비 영수증 이미지에서 정보를 추출하는 전문가입니다. "
-    "반드시 지정된 JSON 형식으로만 응답하세요. 추가 설명은 절대 하지 마세요."
-)
-
-OCR_USER_PROMPT = """이 영수증 이미지에서 정보를 추출해 아래 JSON 형식으로만 응답하세요.
-
-```json
-{
-  "date": "YYYY-MM-DD 형식, 없으면 null",
-  "amount": 총결제금액(숫자만, 원단위 정수), 없으면 null,
-  "items": [{"name": "품목명", "price": 가격}],
-  "store_name": "가게명, 없으면 null",
-  "raw_text": "영수증에 보이는 전체 텍스트"
-}
-```
-
-규칙:
-- amount는 총 결제금액(합계)을 원 단위 정수로 입력 (콤마, "원" 제거)
-- date는 반드시 YYYY-MM-DD 형식. 현재 연도는 __CURRENT_YEAR__년입니다. 연도가 불확실하면 __CURRENT_YEAR__으로 입력하세요.
-- 영수증이 아닌 이미지라면 {"error": "영수증이 아닙니다"} 로만 응답
-- JSON 외 다른 텍스트를 포함하지 마세요"""
-
-# OpenAI GPT-4o Vision 모델
-VISION_MODEL = "gpt-4o"
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-MAX_TOKENS = 2048
 
 
 # ── 데이터 클래스 ─────────────────────────────────────
@@ -77,22 +56,20 @@ class OcrResult:
 # ── 내부 함수 ─────────────────────────────────────────
 
 
-def _get_api_key() -> str:
-    """OpenAI API 키를 반환한다."""
-    api_key = settings.ORBIT_OPENAI_API_KEY
-    if not api_key:
-        raise ValueError("ORBIT_OPENAI_API_KEY가 설정되지 않았습니다.")
-    return api_key
+def _get_clova_config() -> tuple[str, str]:
+    """CLOVA OCR 설정을 반환한다."""
+    secret = settings.CLOVA_OCR_SECRET
+    url = settings.CLOVA_OCR_URL
+    if not secret or not url:
+        raise ValueError("CLOVA_OCR_SECRET 또는 CLOVA_OCR_URL이 설정되지 않았습니다.")
+    return secret, url
 
 
 def _load_and_encode_image(image_path: str) -> tuple[str, str]:
     """이미지 파일을 base64로 인코딩한다.
 
-    Args:
-        image_path: 이미지 파일 경로.
-
     Returns:
-        (base64_data, media_type) 튜플.
+        (base64_data, format) 튜플. format은 CLOVA OCR용 (jpg, png 등).
 
     Raises:
         FileNotFoundError: 파일이 없을 때.
@@ -105,7 +82,7 @@ def _load_and_encode_image(image_path: str) -> tuple[str, str]:
 
     ext = path.suffix.lstrip(".").lower()
 
-    # HEIC 변환 시도
+    # HEIC 변환
     if ext == "heic":
         try:
             import pillow_heif  # type: ignore[import-untyped]
@@ -118,36 +95,29 @@ def _load_and_encode_image(image_path: str) -> tuple[str, str]:
             img.save(buffer, format="JPEG", quality=90)
             buffer.seek(0)
             b64 = base64.standard_b64encode(buffer.read()).decode("utf-8")
-            return b64, "image/jpeg"
+            return b64, "jpg"
         except ImportError:
-            logger.warning(
-                "pillow-heif 미설치 — HEIC 변환 불가. "
-                "원본 파일을 JPEG로 가정하여 전송합니다."
-            )
+            logger.warning("pillow-heif 미설치 — HEIC를 JPEG로 가정하여 전송")
             raw_bytes = path.read_bytes()
             b64 = base64.standard_b64encode(raw_bytes).decode("utf-8")
-            return b64, "image/jpeg"
+            return b64, "jpg"
         except Exception as e:
             raise IOError(f"HEIC 변환 실패: {e}") from e
 
-    # 일반 이미지
-    media_type = SUPPORTED_VISION_TYPES.get(ext)
-    if not media_type:
+    fmt = EXT_TO_FORMAT.get(ext)
+    if not fmt:
         raise ValueError(
             f"지원하지 않는 이미지 형식: .{ext} "
-            f"(지원: {', '.join(sorted(SUPPORTED_VISION_TYPES.keys()))})"
+            f"(지원: {', '.join(sorted(SUPPORTED_EXTENSIONS))})"
         )
 
     raw_bytes = path.read_bytes()
     b64 = base64.standard_b64encode(raw_bytes).decode("utf-8")
-    return b64, media_type
+    return b64, fmt
 
 
 def _normalize_amount(raw: object) -> int | None:
-    """금액 문자열을 원 단위 정수로 정규화한다.
-
-    '12,500원' → 12500, '8500' → 8500, None → None.
-    """
+    """금액 문자열을 원 단위 정수로 정규화한다."""
     if raw is None:
         return None
 
@@ -155,28 +125,21 @@ def _normalize_amount(raw: object) -> int | None:
     if not text or text.lower() == "null":
         return None
 
-    # 콤마, "원", 공백 제거
     text = text.replace(",", "").replace("원", "").replace(" ", "")
 
-    # 소수점 처리
     try:
         value = float(text)
     except (ValueError, TypeError):
         return None
 
     amount = round(value)
-    # 음수 또는 0이면 None
     if amount <= 0:
         return None
     return amount
 
 
 def _normalize_date(raw: object) -> date | None:
-    """날짜 문자열을 date 객체로 정규화한다.
-
-    '2026-03-19', '2026.03.19', '2026/03/19', '26.03.19' 등 지원.
-    미래 날짜이면 None 반환.
-    """
+    """날짜 문자열을 date 객체로 정규화한다."""
     if raw is None:
         return None
 
@@ -184,10 +147,8 @@ def _normalize_date(raw: object) -> date | None:
     if not text or text.lower() == "null":
         return None
 
-    # 구분자 통일
     text = text.replace(".", "-").replace("/", "-")
 
-    # 패턴 매칭
     match = re.match(r"^(\d{2,4})-(\d{1,2})-(\d{1,2})$", text)
     if not match:
         return None
@@ -197,7 +158,6 @@ def _normalize_date(raw: object) -> date | None:
     month = int(month_str)
     day = int(day_str)
 
-    # 2자리 연도 → 4자리 변환
     if year < 100:
         year += 2000
 
@@ -206,109 +166,89 @@ def _normalize_date(raw: object) -> date | None:
     except ValueError:
         return None
 
-    # 미래 날짜 검증
     if result > date.today():
         return None
 
     return result
 
 
-def _parse_ocr_response(response_text: str) -> OcrResult:
-    """Vision API 응답 텍스트를 OcrResult로 파싱한다.
+def _parse_clova_response(resp_json: dict) -> OcrResult:
+    """CLOVA OCR 응답을 파싱하여 OcrResult로 변환한다."""
+    images = resp_json.get("images", [])
+    if not images:
+        return OcrResult(raw_text="CLOVA OCR 응답에 이미지 결과 없음", success=False)
 
-    1차: JSON 파싱 시도
-    2차: 정규식 fallback
-    3차: 최종 실패 → success=False, raw_text에 원본 저장
-    """
-    # JSON 블록 추출 (```json ... ``` 래핑 처리)
-    cleaned = response_text.strip()
-    if "```json" in cleaned:
-        json_match = re.search(r"```json\s*(.*?)\s*```", cleaned, re.DOTALL)
-        if json_match:
-            cleaned = json_match.group(1).strip()
-    elif "```" in cleaned:
-        json_match = re.search(r"```\s*(.*?)\s*```", cleaned, re.DOTALL)
-        if json_match:
-            cleaned = json_match.group(1).strip()
+    image_result = images[0]
+    infer_result = image_result.get("inferResult", "")
 
-    # ── 1차: JSON 파싱 ──
-    try:
-        data = json.loads(cleaned)
+    if infer_result != "SUCCESS":
+        msg = image_result.get("message", "OCR 실패")
+        return OcrResult(raw_text=f"CLOVA OCR 실패: {msg}", success=False)
 
-        # 에러 응답 처리 ("영수증이 아닙니다" 등)
-        if "error" in data:
-            return OcrResult(
-                raw_text=data.get("error", response_text),
-                success=False,
-            )
+    # 모든 필드의 텍스트를 추출
+    fields = image_result.get("fields", [])
+    texts = [f.get("inferText", "") for f in fields]
+    raw_text = " ".join(texts)
 
-        receipt_date = _normalize_date(data.get("date"))
-        amount = _normalize_amount(data.get("amount"))
-        store_name = data.get("store_name")
-        if store_name and str(store_name).lower() == "null":
-            store_name = None
-        items = data.get("items")
-        if isinstance(items, list):
-            # 각 항목의 price를 int로 정규화
-            normalized_items: list[dict[str, object]] = []
-            for item in items:
-                if isinstance(item, dict):
-                    normalized_item: dict[str, object] = {"name": item.get("name", "")}
-                    price = _normalize_amount(item.get("price"))
-                    normalized_item["price"] = price
-                    normalized_items.append(normalized_item)
-            items = normalized_items if normalized_items else None
-        else:
-            items = None
+    if not raw_text.strip():
+        return OcrResult(raw_text="OCR 결과 텍스트 없음", success=False)
 
-        raw_text = data.get("raw_text", response_text)
-
-        return OcrResult(
-            receipt_date=receipt_date,
-            amount=amount,
-            store_name=str(store_name) if store_name else None,
-            items=items,
-            raw_text=str(raw_text),
-            success=True,
-        )
-
-    except (json.JSONDecodeError, KeyError, TypeError):
-        logger.warning("JSON 파싱 실패, 정규식 fallback 시도")
-
-    # ── 2차: 정규식 fallback ──
-    return _regex_fallback(response_text)
+    # 정규식으로 날짜/금액 추출
+    return _extract_from_text(raw_text)
 
 
-def _regex_fallback(text: str) -> OcrResult:
-    """정규식으로 날짜·금액을 추출한다 (JSON 파싱 실패 시 fallback)."""
-    # 날짜 추출
-    date_match = re.search(r"(\d{2,4})[.\-/](\d{1,2})[.\-/](\d{1,2})", text)
+def _extract_from_text(text: str) -> OcrResult:
+    """OCR 텍스트에서 날짜와 금액을 정규식으로 추출한다."""
+    # ── 날짜 추출 ──
     receipt_date: date | None = None
-    if date_match:
-        year_str, month_str, day_str = date_match.groups()
-        year = int(year_str)
-        if year < 100:
-            year += 2000
-        try:
-            candidate = date(year, int(month_str), int(day_str))
-            if candidate <= date.today():
-                receipt_date = candidate
-        except ValueError:
-            pass
+    date_patterns = [
+        r"(\d{4})[.\-/\s](\d{1,2})[.\-/\s](\d{1,2})",  # 2026-03-15
+        r"(\d{2})[.\-/\s](\d{1,2})[.\-/\s](\d{1,2})",   # 26-03-15
+    ]
+    for pattern in date_patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            year = int(match[0])
+            if year < 100:
+                year += 2000
+            try:
+                candidate = date(year, int(match[1]), int(match[2]))
+                if candidate <= date.today():
+                    receipt_date = candidate
+                    break
+            except ValueError:
+                continue
+        if receipt_date:
+            break
 
-    # 금액 추출 — 합계/총/결제 키워드 근처 숫자
+    # ── 금액 추출 ──
     amount: int | None = None
+
+    # 1순위: 합계/총/결제 키워드 근처 금액
     amount_patterns = [
         r"합\s*계.*?(\d[\d,]+)\s*원?",
         r"총.*?(\d[\d,]+)\s*원?",
         r"결제.*?(\d[\d,]+)\s*원?",
+        r"카드.*?(\d[\d,]+)\s*원?",
+        r"승인.*?(\d[\d,]+)\s*원?",
     ]
     for pattern in amount_patterns:
-        m = re.search(pattern, text)
+        m = re.search(pattern, text, re.IGNORECASE)
         if m:
             amount = _normalize_amount(m.group(1))
             if amount is not None:
                 break
+
+    # 2순위: 가장 큰 금액 (1000원 이상)
+    if amount is None:
+        all_amounts = re.findall(r"(\d{1,3}(?:,\d{3})+|\d{4,})\s*원?", text)
+        candidates = []
+        for a in all_amounts:
+            val = _normalize_amount(a)
+            if val and val >= 1000:
+                candidates.append(val)
+        if candidates:
+            amount = max(candidates)
 
     success = receipt_date is not None or amount is not None
     return OcrResult(
@@ -327,8 +267,8 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
 
     3중 에러 방어:
       1차 — 이미지 로드 실패
-      2차 — OpenAI API 호출 실패
-      3차 — 응답 파싱 실패 (내부에서 정규식 fallback)
+      2차 — CLOVA OCR API 호출 실패
+      3차 — 응답 파싱 실패
 
     Args:
         image_path: 영수증 이미지 파일 경로.
@@ -338,7 +278,7 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
     """
     # ── 1차: 이미지 로드 ──
     try:
-        b64_data, media_type = _load_and_encode_image(image_path)
+        b64_data, img_format = _load_and_encode_image(image_path)
     except FileNotFoundError as e:
         logger.error("이미지 파일 없음: %s", e)
         return OcrResult(raw_text=f"이미지 로드 실패: {e}", success=False)
@@ -346,76 +286,61 @@ async def extract_receipt_data(image_path: str) -> OcrResult:
         logger.error("이미지 로드 에러: %s", e)
         return OcrResult(raw_text=f"이미지 로드 실패: {e}", success=False)
 
-    # ── 2차: OpenAI GPT-4o Vision API 호출 ──
+    # ── 2차: CLOVA OCR API 호출 ──
     try:
-        api_key = _get_api_key()
-        data_url = f"data:{media_type};base64,{b64_data}"
+        secret, ocr_url = _get_clova_config()
 
         payload = {
-            "model": VISION_MODEL,
-            "max_tokens": MAX_TOKENS,
-            "messages": [
-                {"role": "system", "content": OCR_SYSTEM_PROMPT},
+            "version": "V2",
+            "requestId": str(uuid.uuid4()),
+            "timestamp": int(time.time() * 1000),
+            "lang": "ko",
+            "images": [
                 {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
-                        {
-                            "type": "text",
-                            "text": OCR_USER_PROMPT.replace("__CURRENT_YEAR__", str(date.today().year)),
-                        },
-                    ],
-                },
+                    "format": img_format,
+                    "name": "receipt",
+                    "data": b64_data,
+                }
             ],
         }
 
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
-                OPENAI_API_URL,
+                ocr_url,
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "X-OCR-SECRET": secret,
                     "Content-Type": "application/json",
                 },
                 json=payload,
             )
 
         if response.status_code == 401:
-            logger.error("OpenAI API 인증 실패")
-            return OcrResult(raw_text="API 인증 실패: 잘못된 API 키", success=False)
+            logger.error("CLOVA OCR 인증 실패")
+            return OcrResult(raw_text="API 인증 실패: 잘못된 Secret Key", success=False)
 
         if response.status_code == 429:
-            logger.error("OpenAI API 요청 한도 초과")
+            logger.error("CLOVA OCR 요청 한도 초과")
             return OcrResult(raw_text="API 요청 한도 초과", success=False)
 
         if response.status_code != 200:
             error_body = response.text
-            logger.error("OpenAI API 에러 %d: %s", response.status_code, error_body)
+            logger.error("CLOVA OCR 에러 %d: %s", response.status_code, error_body)
             return OcrResult(
                 raw_text=f"API 에러 ({response.status_code}): {error_body[:300]}",
                 success=False,
             )
 
         resp_json = response.json()
-        response_text = resp_json["choices"][0]["message"]["content"]
-
-        if not response_text.strip():
-            return OcrResult(
-                raw_text="GPT-4o Vision 응답이 비어있습니다.",
-                success=False,
-            )
 
     except httpx.ConnectError as e:
-        logger.error("OpenAI API 연결 실패: %s", e)
+        logger.error("CLOVA OCR 연결 실패: %s", e)
         return OcrResult(raw_text=f"API 연결 실패: {e}", success=False)
     except httpx.TimeoutException as e:
-        logger.error("OpenAI API 타임아웃: %s", e)
+        logger.error("CLOVA OCR 타임아웃: %s", e)
         return OcrResult(raw_text=f"API 타임아웃: {e}", success=False)
     except Exception as e:
         logger.error("예상치 못한 에러: %s", e)
         return OcrResult(raw_text=f"OCR 처리 실패: {e}", success=False)
 
-    # ── 3차: 응답 파싱 (내부에서 JSON → 정규식 fallback) ──
-    return _parse_ocr_response(response_text)
+    # ── 3차: 응답 파싱 ──
+    return _parse_clova_response(resp_json)

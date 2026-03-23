@@ -5,11 +5,16 @@ QA 에이전트 소유.
 
 from __future__ import annotations
 
+from datetime import date
 from io import BytesIO
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Receipt
 
 
 @pytest.mark.asyncio
@@ -70,3 +75,61 @@ async def test_upload_over_limit(client: AsyncClient) -> None:
     resp = await client.post("/api/receipts/upload", files=files)
     assert resp.status_code == 400
     assert "20" in resp.json()["error"]
+
+
+# ── 같은 날짜 영수증 교체 통합 테스트 ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_upload_replaces_existing_receipt(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """업로드 → 같은 날짜 재업로드 → DB에 1건만 존재."""
+    # 1차 업로드
+    files1 = [("files", ("first.jpg", BytesIO(b"first"), "image/jpeg"))]
+    resp1 = await client.post("/api/receipts/upload", files=files1)
+    assert resp1.status_code == 201
+    data1 = resp1.json()
+    assert data1["total_uploaded"] == 1
+    first_date = data1["uploaded"][0]["receipt_date"]  # 2026-03-15 (mock 기본값)
+
+    # 2차 업로드 (같은 날짜 OCR 결과)
+    files2 = [("files", ("second.jpg", BytesIO(b"second"), "image/jpeg"))]
+    with patch("app.routers.receipts.delete_image", return_value=True):
+        resp2 = await client.post("/api/receipts/upload", files=files2)
+    assert resp2.status_code == 201
+    data2 = resp2.json()
+    assert data2["total_uploaded"] == 1
+    assert data2["replaced_count"] == 1
+
+    # DB에 같은 날짜 영수증이 1건만 존재하는지 확인
+    result = await db_session.execute(
+        select(Receipt).where(
+            Receipt.receipt_date == date.fromisoformat(first_date)
+        )
+    )
+    receipts = result.scalars().all()
+    assert len(receipts) == 1
+
+
+@pytest.mark.asyncio
+async def test_replaced_receipt_image_deleted(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """교체 시 delete_image 호출 확인."""
+    # 1차 업로드
+    files1 = [("files", ("old.jpg", BytesIO(b"old"), "image/jpeg"))]
+    resp1 = await client.post("/api/receipts/upload", files=files1)
+    assert resp1.status_code == 201
+    old_image_path = resp1.json()["uploaded"][0]["image_path"]
+
+    # 2차 업로드 (같은 날짜 OCR 결과) — delete_image mock
+    files2 = [("files", ("new.jpg", BytesIO(b"new"), "image/jpeg"))]
+    with patch("app.routers.receipts.delete_image", return_value=True) as mock_del:
+        resp2 = await client.post("/api/receipts/upload", files=files2)
+    assert resp2.status_code == 201
+
+    # delete_image가 기존 이미지 경로로 호출되었는지 확인
+    mock_del.assert_called_once_with(old_image_path)

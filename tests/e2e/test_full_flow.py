@@ -63,9 +63,10 @@ async def test_upload_then_stats_consistency(
 ) -> None:
     """업로드 후 통계 수치 정합성."""
     amounts = [15000, 25000, 35000]
-    for a in amounts:
+    dates = [d(2026, 3, 20), d(2026, 3, 21), d(2026, 3, 22)]
+    for a, dt in zip(amounts, dates):
         mock_ocr.return_value = OcrResult(
-            receipt_date=d(2026, 3, 20),
+            receipt_date=dt,
             amount=a,
             raw_text="test",
             success=True,

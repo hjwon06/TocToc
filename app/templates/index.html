@@ -4,36 +4,42 @@
 
 {% block content %}
 <div x-data="{
-    month: '',
-    sort: 'date_desc',
-    get queryParams() {
+    month: new URLSearchParams(location.search).get('month') || '',
+    sort: new URLSearchParams(location.search).get('sort') || 'date_desc',
+    page: parseInt(new URLSearchParams(location.search).get('page') || '1'),
+    pushState() {
         let params = new URLSearchParams();
         if (this.month) params.set('month', this.month);
-        params.set('sort', this.sort);
-        params.set('page', '1');
-        params.set('size', '20');
-        return params.toString();
+        if (this.sort !== 'date_desc') params.set('sort', this.sort);
+        if (this.page > 1) params.set('page', this.page);
+        const qs = params.toString();
+        const url = qs ? '?' + qs : '/';
+        history.replaceState(null, '', url);
+    },
+    loadReceipts() {
+        const params = new URLSearchParams({page: this.page, size: 20, sort: this.sort});
+        if (this.month) params.set('month', this.month);
+        htmx.ajax('GET', '/api/receipts?' + params.toString(), {target: '#receipt-list', swap: 'innerHTML'});
+    },
+    applyFilter() {
+        this.page = 1;
+        this.pushState();
+        this.loadReceipts();
     }
-}">
+}" x-init="pushState(); $nextTick(() => loadReceipts())"
+   @receipt-deleted.window="loadReceipts()"
+   @receipt-updated.window="loadReceipts()">
     <!-- 필터 바 -->
     <div class="flex items-center gap-3 mb-4">
         <div class="flex-1">
             <input type="month"
                    x-model="month"
-                   hx-get="/api/receipts"
-                   hx-target="#receipt-list"
-                   hx-swap="innerHTML"
-                   hx-trigger="change"
-                   :hx-vals="JSON.stringify({month: month, sort: sort, page: 1, size: 20})"
+                   @change="applyFilter()"
                    class="w-full min-h-[48px] px-3 text-base rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                    placeholder="월 선택">
         </div>
         <select x-model="sort"
-                hx-get="/api/receipts"
-                hx-target="#receipt-list"
-                hx-swap="innerHTML"
-                hx-trigger="change"
-                :hx-vals="JSON.stringify({month: month, sort: sort, page: 1, size: 20})"
+                @change="applyFilter()"
                 class="min-h-[48px] px-3 text-base rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
             <option value="date_desc">최신순</option>
             <option value="date_asc">오래된순</option>
@@ -42,13 +48,9 @@
         </select>
     </div>
 
-    <!-- 영수증 목록 (HTMX로 로드) -->
-    <div id="receipt-list"
-         hx-get="/api/receipts?page=1&size=20&sort=date_desc"
-         hx-trigger="load, receipt-deleted from:body, receipt-updated from:body"
-         hx-swap="innerHTML">
-        <!-- HTMX 로딩 인디케이터 -->
-        <div class="htmx-indicator text-center py-8">
+    <!-- 영수증 목록 -->
+    <div id="receipt-list">
+        <div class="text-center py-8">
             <div class="inline-block w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
             <p class="text-base text-gray-500 mt-2">불러오는 중...</p>
         </div>

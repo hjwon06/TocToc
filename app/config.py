@@ -18,8 +18,12 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:password@localhost:5432/toctoc"
     )
 
-    # AI/OCR (OpenAI GPT-4o Vision)
+    # AI/OCR (OpenAI GPT-4o Vision — 핑퐁용)
     ORBIT_OPENAI_API_KEY: str = ""
+
+    # OCR (Naver CLOVA OCR)
+    CLOVA_OCR_SECRET: str = ""
+    CLOVA_OCR_URL: str = ""
 
     # File Upload
     UPLOAD_DIR: str = "static/uploads"

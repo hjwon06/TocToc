@@ -37,8 +37,9 @@ async def _upload_with_amount(
 async def test_stats_match_uploads(client: AsyncClient, mock_ocr) -> None:
     """5건 업로드 → 통계 합계 일치."""
     amounts = [10000, 20000, 30000, 15000, 25000]
-    for a in amounts:
-        await _upload_with_amount(client, mock_ocr, a)
+    dates = [d(2026, 3, 10), d(2026, 3, 11), d(2026, 3, 12), d(2026, 3, 13), d(2026, 3, 14)]
+    for a, dt in zip(amounts, dates):
+        await _upload_with_amount(client, mock_ocr, a, receipt_date=dt)
 
     resp = await client.get("/api/stats/", params={"month": "2026-03"})
     assert resp.status_code == 200

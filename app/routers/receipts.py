@@ -61,6 +61,35 @@ def _receipt_to_dict(receipt: Receipt) -> dict:
     }
 
 
+async def _find_duplicates_by_date(
+    db: AsyncSession,
+    target_date: date,
+    exclude_id: int | None = None,
+) -> list[Receipt]:
+    """같은 날짜의 기존 영수증 조회 (중복 교체용).
+
+    receipt_date=NULL인 건은 = 비교에서 자동 제외된다.
+    """
+    query = select(Receipt).where(Receipt.receipt_date == target_date)
+    if exclude_id is not None:
+        query = query.where(Receipt.id != exclude_id)
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def _delete_duplicates(
+    db: AsyncSession,
+    duplicates: list[Receipt],
+) -> int:
+    """중복 영수증 삭제 (이미지 + DB)."""
+    count = 0
+    for dup in duplicates:
+        delete_image(dup.image_path)
+        await db.delete(dup)
+        count += 1
+    return count
+
+
 @router.post("/{receipt_id}/retry-ocr")
 async def retry_ocr(
     receipt_id: int,
@@ -86,6 +115,13 @@ async def retry_ocr(
         if ocr_date and ocr_date < date_min:
             logger.warning("재OCR 날짜 비정상: %s (%s) → 미분류", receipt_id, ocr_date)
             ocr_date = None
+
+        # 같은 날짜 기존 건 교체
+        if ocr_date:
+            duplicates = await _find_duplicates_by_date(db, ocr_date, exclude_id=receipt.id)
+            if duplicates:
+                removed = await _delete_duplicates(db, duplicates)
+                logger.info("재OCR 중복 교체: %s건 삭제 (날짜=%s)", removed, ocr_date)
 
         receipt.receipt_date = ocr_date
         receipt.amount = ocr_result.amount
@@ -185,17 +221,26 @@ async def upload_receipts(
 
     ocr_results = await asyncio.gather(*[_ocr_task(path) for _, path in saved])
 
-    # ── Phase 3: DB 저장 ──
+    # ── Phase 3: DB 저장 (같은 날짜 기존 건 교체) ──
     today = date.today()
     date_min = date(today.year, today.month, 1)
+    replaced_count = 0
 
     for (filename, image_path), ocr_result in zip(saved, ocr_results):
         if ocr_result and ocr_result.success:
             ocr_date = ocr_result.receipt_date
-            # 날짜가 6개월 이상 과거면 OCR 오류로 판단 → 미분류
+            # 날짜가 당월 이전이면 OCR 오류로 판단 → 미분류
             if ocr_date and ocr_date < date_min:
                 logger.warning("OCR 날짜 비정상: %s (%s) → 미분류", filename, ocr_date)
                 ocr_date = None
+
+            # 같은 날짜 기존 건 교체
+            if ocr_date:
+                duplicates = await _find_duplicates_by_date(db, ocr_date)
+                if duplicates:
+                    removed = await _delete_duplicates(db, duplicates)
+                    replaced_count += removed
+                    logger.info("업로드 중복 교체: %s건 삭제 (날짜=%s)", removed, ocr_date)
 
             receipt = Receipt(
                 image_path=image_path,
@@ -226,6 +271,7 @@ async def upload_receipts(
                 "receipts": results,
                 "errors": errors,
                 "is_upload_result": True,
+                "replaced_count": replaced_count,
             },
         )
 
@@ -234,6 +280,7 @@ async def upload_receipts(
             "uploaded": results,
             "errors": errors,
             "total_uploaded": len(results),
+            "replaced_count": replaced_count,
         },
         status_code=201 if results else 400,
     )
@@ -448,18 +495,24 @@ async def update_receipt(
             receipt.receipt_date = None
         else:
             try:
-                receipt.receipt_date = date.fromisoformat(receipt_date)
+                parsed_date = date.fromisoformat(receipt_date)
             except ValueError:
                 return JSONResponse(
                     content={"error": "날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)"},
                     status_code=400,
                 )
+            # 같은 날짜 기존 건 교체
+            duplicates = await _find_duplicates_by_date(db, parsed_date, exclude_id=receipt.id)
+            if duplicates:
+                removed = await _delete_duplicates(db, duplicates)
+                logger.info("수정 중복 교체: %s건 삭제 (날짜=%s)", removed, parsed_date)
+            receipt.receipt_date = parsed_date
 
     # 금액 업데이트
     if amount is not None:
         receipt.amount = amount
 
-    receipt.is_manual = True
+    receipt.is_manual = receipt.receipt_date is None
     await db.flush()
     await db.refresh(receipt)
 
@@ -525,7 +578,7 @@ async def unclassified_page(
     """미분류 영수증 목록 페이지."""
     query = (
         select(Receipt)
-        .where(Receipt.is_manual.is_(True))
+        .where(Receipt.receipt_date.is_(None))
         .order_by(Receipt.created_at.desc())
     )
     result = await db.execute(query)
@@ -547,7 +600,7 @@ async def retry_all_ocr(
     """미분류 영수증 전체 재OCR."""
     query = (
         select(Receipt)
-        .where(Receipt.is_manual.is_(True))
+        .where(Receipt.receipt_date.is_(None))
         .order_by(Receipt.created_at.desc())
     )
     result = await db.execute(query)
@@ -559,31 +612,51 @@ async def retry_all_ocr(
             '<p class="text-base">미분류 영수증이 없습니다</p></div>'
         )
 
-    # 병렬 OCR
+    # Phase 1: 병렬 OCR (결과만 수집)
     semaphore = asyncio.Semaphore(OCR_CONCURRENCY)
 
-    async def _ocr_one(receipt: Receipt) -> None:
+    async def _ocr_one(receipt: Receipt) -> tuple[Receipt, OcrResult | None]:
         async with semaphore:
             try:
                 ocr_result = await extract_receipt_data(receipt.image_path)
             except Exception as e:
                 logger.error("재OCR 실패: %s — %s", receipt.id, e)
-                return
-            if ocr_result and ocr_result.success:
-                receipt.receipt_date = ocr_result.receipt_date
-                receipt.amount = ocr_result.amount
-                receipt.is_manual = False
-                receipt.ocr_raw = ocr_result.raw_text
-            else:
-                receipt.ocr_raw = ocr_result.raw_text if ocr_result else "OCR 재시도 실패"
+                return receipt, None
+            return receipt, ocr_result
 
-    await asyncio.gather(*[_ocr_one(r) for r in receipts])
+    ocr_pairs = await asyncio.gather(*[_ocr_one(r) for r in receipts])
+
+    # Phase 2: 순차 DB 업데이트 (중복 교체 포함, race condition 방지)
+    today = date.today()
+    date_min = date(today.year, today.month, 1)
+
+    for receipt, ocr_result in ocr_pairs:
+        if ocr_result and ocr_result.success:
+            ocr_date = ocr_result.receipt_date
+            if ocr_date and ocr_date < date_min:
+                logger.warning("전체재OCR 날짜 비정상: %s (%s) → 미분류", receipt.id, ocr_date)
+                ocr_date = None
+
+            # 같은 날짜 기존 건 교체
+            if ocr_date:
+                duplicates = await _find_duplicates_by_date(db, ocr_date, exclude_id=receipt.id)
+                if duplicates:
+                    removed = await _delete_duplicates(db, duplicates)
+                    logger.info("전체재OCR 중복 교체: %s건 삭제 (날짜=%s)", removed, ocr_date)
+
+            receipt.receipt_date = ocr_date
+            receipt.amount = ocr_result.amount
+            receipt.is_manual = ocr_date is None
+            receipt.ocr_raw = ocr_result.raw_text
+        else:
+            receipt.ocr_raw = ocr_result.raw_text if ocr_result else "OCR 재시도 실패"
+
     await db.flush()
 
     # 남은 미분류 조회
     result2 = await db.execute(
         select(Receipt)
-        .where(Receipt.is_manual.is_(True))
+        .where(Receipt.receipt_date.is_(None))
         .order_by(Receipt.created_at.desc())
     )
     remaining = result2.scalars().all()
